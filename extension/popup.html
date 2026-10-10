@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PULL</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header><div class="logo">PULL<span>↙</span></div><span class="eyebrow">BROWSER LINK</span></header>
+  <main>
+    <section class="intro"><h1>Смотри. Лови. Сохраняй.</h1><p>Включи поиск в этой вкладке, затем нажми Play на сайте.</p></section>
+    <div class="capture"><span id="tab-title">Текущая вкладка</span><button id="toggle" class="primary">Начать поиск</button></div>
+    <p id="capture-hint" class="hint">Поиск работает только в выбранных тобой вкладках.</p>
+    <div class="section-title"><h2>Найденные потоки <span id="count">0</span></h2><button id="clear" class="text-button">Очистить</button></div>
+    <div id="streams" class="streams"></div>
+    <p id="empty" class="empty">Пока тихо.<br><span>Запусти видео или обнови страницу после начала поиска.</span></p>
+    <details id="pairing"><summary><span id="connection-dot" class="dot"></span><span id="connection">Подключение к приложению</span><span class="chevron">⌄</span></summary><div class="pairing-content"><label for="token">Ключ подключения из настроек PULL</label><div class="token-row"><input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="Вставь ключ"><button id="save" class="secondary">Связать</button></div><p class="hint">Поток отправится в PULL только по кнопке «Передать».</p></div></details>
+    <div id="message" role="status" aria-live="polite"></div>
+  </main>
+  <footer><span>Локально. Под твоим контролем.</span><span>01 / PULL</span></footer>
+  <script src="popup.js"></script>
+</body>
+</html>

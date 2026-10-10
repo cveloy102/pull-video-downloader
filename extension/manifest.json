@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "PULL — поймать видеопоток",
+  "version": "1.0.0",
+  "description": "Находит HLS, DASH и видео в выбранной вами вкладке и передаёт выбранный поток в PULL для Windows.",
+  "permissions": ["activeTab", "storage", "webRequest"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "PULL", "default_popup": "popup.html" },
+  "content_security_policy": { "extension_pages": "script-src 'self'; object-src 'none'; connect-src http://127.0.0.1:17841" }
+}

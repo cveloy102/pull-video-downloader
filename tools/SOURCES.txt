@@ -1,0 +1,12 @@
+Official executable sources and licenses:
+yt-dlp: https://github.com/yt-dlp/yt-dlp (Windows binary includes GPLv3+ components).
+FFmpeg: https://github.com/yt-dlp/FFmpeg-Builds (GPL build; release and build sources).
+FFmpeg upstream sources: https://ffmpeg.org/download.html#get-sources
+Node.js: https://nodejs.org/ and https://github.com/nodejs/node/blob/main/LICENSE
+Preserve the bundled license files when redistributing.
+
+{
+  "node": "v24.19.0",
+  "ytDlp": "2026.08.19",
+  "ffmpeg": "latest"
+}
