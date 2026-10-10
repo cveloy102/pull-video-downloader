@@ -4,6 +4,8 @@
 
 ## Запуск готовой версии
 
+[Скачать PULL 1.0.0 для Windows](https://github.com/cveloy102/pull-video-downloader/releases/download/v1.0.0/PULL-1.0.0-portable.exe). [Скачать расширение Edge/Chrome](https://github.com/cveloy102/pull-video-downloader/releases/download/v1.0.0/PULL-extension.zip). [Страница релиза](https://github.com/cveloy102/pull-video-downloader/releases/tag/v1.0.0). Для скачивания войдите в GitHub под аккаунтом с доступом к приватному репозиторию.
+
 Откройте `PULL-1.0.0-portable.exe`. Установка Python, Node.js и FFmpeg не требуется: необходимые программы включены. Настройки и история сохраняются в профиле пользователя. Папку для видео можно изменить в настройках.
 
 ## Как скачать
