@@ -6,7 +6,7 @@ Node.js: https://nodejs.org/ and https://github.com/nodejs/node/blob/main/LICENS
 Preserve the bundled license files when redistributing.
 
 {
-  "node": "v24.19.0",
-  "ytDlp": "2026.08.19",
+  "node": "v26.13.1",
+  "ytDlp": "2026.10.26",
   "ffmpeg": "latest"
 }

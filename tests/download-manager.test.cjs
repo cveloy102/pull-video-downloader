@@ -139,3 +139,62 @@ test('download failures are not marked complete and retain resume state', async 
     assert.ok(fs.existsSync(path.join(f.downloadDir, '.pull-parts', job.id)));
   } finally { f.cleanup(); }
 });
+
+test('auth errors are recognized only in context', () => {
+  assert.equal(_internals.describeError('ERROR: HTTP Error 403: Forbidden').code, 'AUTH_REQUIRED');
+  assert.equal(_internals.describeError('ERROR: [youtube] abc: Sign in to confirm you are not a bot. Use --cookies-from-browser or --cookies').code, 'AUTH_REQUIRED');
+  assert.notEqual(_internals.describeError('ERROR: unable to download video 14031 fragment').code, 'AUTH_REQUIRED');
+  assert.notEqual(_internals.describeError('ERROR: Unable to write file: extracting cookies failed? no').code, 'AUTH_REQUIRED');
+});
+
+test('warnings do not replace the real download error', async () => {
+  const f = fixture();
+  try {
+    f.manager.add({ url: 'https://example.com/video' }); await tick();
+    f.children[0].stderr.write('WARNING: [generic] Falling back on generic information extractor; cookies may help\n');
+    f.children[0].stderr.write('ERROR: Unable to download webpage: connection reset\n');
+    f.children[0].emit('close', 1);
+    const failed = f.manager.getState()[0];
+    assert.equal(failed.errorCode, 'DOWNLOAD_FAILED');
+    assert.match(failed.error, /connection reset/);
+  } finally { f.cleanup(); }
+});
+
+test('temporary fragments are removed after completion and cancel, kept after errors', async () => {
+  const f = fixture({ concurrency: 1 });
+  const waitGone = async (dir) => { for (let i = 0; i < 50 && fs.existsSync(dir); i++) await new Promise((r) => setTimeout(r, 20)); };
+  try {
+    const done = f.manager.add({ url: 'https://example.com/done' }); await tick();
+    const doneParts = path.join(f.downloadDir, '.pull-parts', done.id);
+    fs.writeFileSync(path.join(doneParts, 'chunk.part'), 'x');
+    const finalFile = path.join(f.downloadDir, 'done.mp4'); fs.writeFileSync(finalFile, 'video');
+    f.children[0].stdout.write(`__PULL_FILE__${JSON.stringify(finalFile)}\n`);
+    f.children[0].emit('close', 0);
+    await waitGone(doneParts);
+    assert.ok(!fs.existsSync(doneParts), 'completed job leaves no fragments');
+    assert.ok(fs.existsSync(finalFile), 'final file is untouched');
+
+    const paused = f.manager.add({ url: 'https://example.com/paused' }); await tick();
+    const pausedParts = path.join(f.downloadDir, '.pull-parts', paused.id);
+    f.manager.pause(paused.id); f.children[1].emit('close', null);
+    assert.ok(fs.existsSync(pausedParts), 'paused job keeps fragments for resume');
+    f.manager.cancel(paused.id);
+    await waitGone(pausedParts);
+    assert.ok(!fs.existsSync(pausedParts), 'cancel removes fragments');
+  } finally { f.cleanup(); }
+});
+
+test('history keeps ordinary query parameters so jobs stay resumable', async () => {
+  const f = fixture();
+  try {
+    f.manager.add({ url: 'https://example.com/watch?v=abc&list=PL1&t=30' });
+    f.manager.add({ url: 'https://cdn.example.com/v.mp4?Expires=1&Signature=s3cret' });
+    const history = JSON.parse(fs.readFileSync(path.join(f.dataDir, 'downloads.json'), 'utf8'));
+    const plain = history.find((job) => job.url.includes('watch'));
+    const signed = history.find((job) => job.url.includes('cdn'));
+    assert.equal(plain.url, 'https://example.com/watch?v=abc&list=PL1&t=30');
+    assert.equal(plain.requiresSession, false);
+    assert.equal(signed.requiresSession, true);
+    assert.ok(!signed.url.includes('s3cret'));
+  } finally { f.cleanup(); }
+});

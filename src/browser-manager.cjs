@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
+const fsSync = require('node:fs');
 const path = require('node:path');
 
 const MAX_CANDIDATES = 80;
@@ -108,6 +109,11 @@ class BrowserManager {
     this.bounds = { x: 0, y: 0, width: 0, height: 0, visible: false };
     this.browser = { url: '', title: '', loading: false, canGoBack: false, canGoForward: false, error: '' };
     this.disposed = false;
+    // Cookie jars from a previous run belong to sessions that are no longer
+    // resumable (history never keeps them), so leftovers after a crash are removed.
+    if (dataDir) {
+      try { fsSync.rmSync(path.join(dataDir, 'capture-cookies'), { recursive: true, force: true }); } catch {}
+    }
   }
 
   getState() {
@@ -136,7 +142,7 @@ class BrowserManager {
     this.session.setPermissionRequestHandler((_wc, permission, callback) => callback(['fullscreen'].includes(permission)));
     this.session.setPermissionCheckHandler((_wc, permission) => ['fullscreen'].includes(permission));
     this.view = new WebContentsView({ webPreferences: { session: this.session, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, allowRunningInsecureContent: false, navigateOnDragDrop: false, spellcheck: false } });
-    this.view.setBackgroundColor('#101211');
+    this.view.setBackgroundColor('#ffffff');
     this.window.contentView.addChildView(this.view);
     this.setBounds(this.bounds);
     const wc = this.view.webContents;
@@ -352,7 +358,8 @@ class BrowserManager {
     this.requests.clear();
     this.cdpRequests.clear();
     this.candidates.clear();
-    for (const file of this.cookieFiles) fs.unlink(file).catch(() => {});
+    // Synchronous on purpose: the app may exit right after dispose().
+    for (const file of this.cookieFiles) { try { fsSync.unlinkSync(file); } catch {} }
     this.cookieFiles.clear();
     this.view = null;
   }

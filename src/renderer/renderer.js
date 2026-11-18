@@ -31,7 +31,7 @@ const ICONS = {
 const $ = (id) => document.getElementById(id);
 const api = window.pull;
 const ui = { route: 'downloads', filter: 'all', analysis: null, analysisUrl: '', audioOnly: false, analysisToken: 0, modal: false, captureSources: [], selectedSource: null, recorder: null, captureStream: null, recordingId: null, recordingStarted: 0, recordingTimer: null, chunkWrites: Promise.resolve(), recordingError: null, lastRecordingId: null, lastRecordingPath: null, captureBusy: false, lastCandidates: '', lastJobs: '', lastBounds: '', closeRequested: false, finishPromise: null };
-let state = { settings: { theme: 'dark', directory: '', quality: 'best', concurrency: 2 }, jobs: [], recordings: [], candidates: [], browser: {}, tools: {} };
+let state = { settings: { theme: 'light', closeToTray: true, launchAtLogin: false, directory: '', quality: 'best', concurrency: 2 }, jobs: [], recordings: [], candidates: [], browser: {}, tools: {} };
 const ACTIVE = new Set(['queued', 'analyzing', 'downloading', 'merging', 'processing', 'starting']);
 
 function icon(name) {
@@ -60,8 +60,8 @@ function navigate(route) {
   if (!$(`page-${route}`)) route = 'downloads';
   ui.route = route;
   document.querySelectorAll('.page').forEach(page => page.classList.toggle('active', page.id === `page-${route}`));
-  document.querySelectorAll('[data-route]').forEach(button => button.classList.toggle('active', button.dataset.route === route));
-  $('breadcrumbCurrent').textContent = ({ downloads: 'ЗАГРУЗКИ', browser: 'БРАУЗЕР', recording: 'ЗАПИСЬ ЭКРАНА', history: 'ИСТОРИЯ', settings: 'НАСТРОЙКИ' })[route];
+  document.querySelectorAll('.rail [data-route]').forEach(button => button.classList.toggle('active', button.dataset.route === route));
+  $('titlebarPage').textContent = ({ downloads: 'Загрузки', browser: 'Браузер', recording: 'Запись экрана', history: 'История', settings: 'Настройки' })[route];
   requestAnimationFrame(syncBrowserBounds);
 }
 async function syncBrowserBounds() {
@@ -70,17 +70,28 @@ async function syncBrowserBounds() {
   const key = JSON.stringify(bounds); if (key === ui.lastBounds) return; ui.lastBounds = key;
   try { await call('setBrowserBounds', bounds); } catch { /* Main process may still be starting. */ }
 }
-function applyTheme() { const theme = state.settings?.theme || 'dark'; document.body.classList.toggle('light', theme === 'light'); $('themeDark').classList.toggle('selected', theme !== 'light'); $('themeLight').classList.toggle('selected', theme === 'light'); $('quickTheme').replaceChildren(icon(theme === 'light' ? 'moon' : 'sun')); }
+const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
+function resolvedTheme() { const theme = state.settings?.theme || 'light'; return theme === 'system' ? (systemDark.matches ? 'dark' : 'light') : theme; }
+function applyTheme() {
+  const theme = state.settings?.theme || 'light'; const resolved = resolvedTheme();
+  document.documentElement.dataset.theme = resolved;
+  for (const [id, value] of [['themeSystem', 'system'], ['themeLight', 'light'], ['themeDark', 'dark']]) $(id).classList.toggle('selected', theme === value);
+  $('quickTheme').replaceChildren(icon(resolved === 'light' ? 'moon' : 'sun'));
+  $('quickTheme').title = resolved === 'light' ? 'Тёмная тема' : 'Светлая тема';
+}
+const QUALITY_LABELS = { best: 'Лучшее', 4320: '8K', 2160: 'До 4K', 1440: 'До 1440p', 1080: 'До 1080p', 720: 'До 720p', 480: 'До 480p' };
 async function saveSettings(patch) { await call('updateSettings', patch); state.settings = { ...state.settings, ...patch }; renderSettings(); }
 function renderSettings() {
   const settings = state.settings || {}; const directory = settings.directory || 'Выбери папку в настройках';
-  $('downloadDirectory').textContent = directory; $('downloadDirectory').title = directory; $('settingsDirectory').textContent = directory; $('settingsDirectory').title = directory;
+  $('downloadDirectory').textContent = directory; $('changeFolderInline').title = `Изменить папку: ${directory}`; $('settingsDirectory').textContent = directory; $('settingsDirectory').title = directory;
+  $('chipQuality').textContent = QUALITY_LABELS[settings.quality] || 'Лучшее'; $('chipConcurrency').textContent = String(settings.concurrency || 2);
+  $('closeToTray').checked = settings.closeToTray !== false; $('launchAtLogin').checked = settings.launchAtLogin === true;
   if (document.activeElement !== $('defaultQuality')) $('defaultQuality').value = String(settings.quality || 'best');
   if (document.activeElement !== $('concurrency')) $('concurrency').value = String(settings.concurrency || 2);
   const ready = state.tools?.ready;
   $('engineLight').className = `status-light${ready ? ' ready' : state.tools?.error ? ' error' : ''}`;
   $('engineLabel').textContent = ready ? 'Движок готов' : state.tools?.error ? 'Нужна настройка' : 'Подготовка движка';
-  $('engineDetail').textContent = ready ? 'yt-dlp + FFmpeg' : state.tools?.error ? 'Подробнее в настройках' : 'Проверяем компоненты';
+  $('engineDetail').textContent = ready ? 'yt-dlp · FFmpeg' : state.tools?.error ? 'Подробнее в настройках' : 'Проверяем компоненты';
   $('engineBanner').hidden = !state.tools?.error; $('engineBannerText').textContent = state.tools?.error || '';
   $('ytDlpStatus').textContent = state.tools?.ytDlp ? 'Готов к работе' : state.tools?.error || 'Проверка…';
   $('ffmpegStatus').textContent = state.tools?.ffmpeg ? 'Готов к работе' : state.tools?.error || 'Проверка…';
@@ -91,33 +102,52 @@ function renderSettings() {
   applyTheme();
 }
 
+function timeLabel(value) { const date = new Date(value); if (Number.isNaN(date.getTime())) return ''; const today = new Date().toDateString() === date.toDateString(); return today ? date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' }); }
+function jobProgress(job) {
+  const pct = Math.round(percent(job.progress));
+  switch (job.status) {
+    case 'downloading': return { tone: 'run', bar: '', width: pct, text: [`${pct}%`, speedLabel(job.speed), job.eta ? (typeof job.eta === 'number' ? seconds(job.eta) : job.eta) : ''].filter(Boolean).join(' · ') };
+    case 'merging': case 'processing': return { tone: 'merge', bar: 'merge', width: 100, text: 'склейка видео и звука' };
+    case 'queued': return { tone: '', bar: 'pause', width: 0, text: 'в очереди' };
+    case 'analyzing': case 'starting': return { tone: 'run', bar: 'indeterminate', width: 35, text: 'подготовка' };
+    case 'paused': return { tone: '', bar: 'pause', width: pct, text: `${pct}% · пауза` };
+    case 'completed': return { tone: 'ok', bar: 'ok', width: 100, text: job.filename ? job.filename.split(/[\\/]/).pop() : 'готово' };
+    case 'error': return { tone: 'error', bar: 'error', width: pct, text: 'ошибка' };
+    default: return { tone: '', bar: 'pause', width: pct, text: 'отменено' };
+  }
+}
 function jobCard(job) {
-  const card = el('article', 'job-card');
-  const thumbnail = el('div', 'job-thumbnail'); thumbnail.append(imageFor(job.thumbnail) || icon('play'));
-  const body = el('div', 'job-body'); const titleRow = el('div', 'job-title-row'); const title = el('h3', 'job-title', job.title || hostOf(job.url)); title.title = job.title || job.url || 'Видео';
-  const labels = { queued: 'В очереди', analyzing: 'Поиск форматов', downloading: 'Скачивается', merging: 'Сборка дорожек', processing: 'Обработка', starting: 'Подготовка', completed: 'Готово', paused: 'Пауза', error: 'Ошибка', cancelled: 'Отменено', canceled: 'Отменено' };
-  const status = el('span', `job-status${ACTIVE.has(job.status) ? ' active' : job.status === 'error' ? ' error' : ''}`, labels[job.status] || job.status || 'В очереди'); titleRow.append(title, status); body.append(titleRow);
-  const meta = el('div', 'job-meta'); meta.append(el('span', 'job-host', hostOf(job.url)));
-  const details = [];
-  if (job.status === 'downloading' || job.status === 'paused') details.push(`${Math.round(percent(job.progress))}%`);
-  if (job.status === 'downloading' && speedLabel(job.speed)) details.push(speedLabel(job.speed));
-  if (job.status === 'downloading' && job.eta) details.push(`осталось ${typeof job.eta === 'number' ? seconds(job.eta) : job.eta}`);
-  if (job.status === 'completed' && job.filename) details.push(job.filename.split(/[\\/]/).pop());
-  details.forEach(detail => { meta.append(el('span', '', '·'), el('span', 'job-host', detail)); }); body.append(meta);
-  if (['downloading', 'paused', 'merging', 'processing'].includes(job.status)) { const track = el('div', 'job-progress-track'); const bar = el('div', `job-progress-bar${job.status === 'paused' ? ' paused' : ''}`); bar.style.width = `${job.status === 'merging' ? 100 : percent(job.progress)}%`; track.append(bar); body.append(track); }
-  if (job.error) body.append(el('p', 'job-error', job.error));
+  const row = el('article', 'job-row');
+  const progress = jobProgress(job);
+  const name = el('div', 'job-name'); const text = el('div');
+  const title = el('h3', 'job-title', job.title || hostOf(job.url)); title.title = job.title || job.url || 'Видео';
+  const sub = [hostOf(job.url)]; if (job.status === 'completed' && job.completedAt) sub.push(timeLabel(job.completedAt)); if (job.directory && job.status === 'completed') sub.push(job.directory);
+  text.append(title, el('p', 'job-sub', sub.filter(Boolean).join(' · '))); name.append(el('span', `dot ${progress.tone}`), text);
+  const quality = job.audioOnly ? 'Аудио' : QUALITY_LABELS[job.quality] || (job.quality ? `${job.quality}p` : 'Лучшее');
+  const format = el('span', 'job-format', [quality, bytes(job.totalBytes)].filter(Boolean).join(' · '));
+  const progressCell = el('div', 'job-progress'); const track = el('div', 'track'); const bar = el('i', progress.bar); bar.style.width = `${progress.width}%`; track.append(bar);
+  const progressText = el('span', '', progress.text); progressText.title = progress.text; progressCell.append(track, progressText);
   const actions = el('div', 'job-actions');
   if (job.status === 'completed') { actions.append(buttonIcon('play', 'Открыть видео', () => call('openFile', job.id)), buttonIcon('folder', 'Показать в папке', () => call('showFile', job.id))); }
   else if (['paused', 'error', 'cancelled', 'canceled'].includes(job.status)) actions.append(buttonIcon('play', job.status === 'paused' ? 'Продолжить' : 'Повторить загрузку', () => call('resumeDownload', job.id)));
   else if (['queued', 'downloading', 'analyzing', 'starting'].includes(job.status)) actions.append(buttonIcon('pause', 'Приостановить', () => call('pauseDownload', job.id)));
   if (ACTIVE.has(job.status) || job.status === 'paused') actions.append(buttonIcon('close', 'Отменить загрузку', () => call('cancelDownload', job.id), 'danger'));
   else actions.append(buttonIcon('trash', 'Удалить из списка, сохранив файл', () => call('removeDownload', job.id), 'danger'));
-  card.append(thumbnail, body, actions); return card;
+  row.append(name, format, progressCell, actions);
+  if (job.error) row.append(el('p', 'job-error', job.error));
+  return row;
+}
+function summaryText(jobs) {
+  const active = jobs.filter(job => ACTIVE.has(job.status));
+  if (!active.length) { const paused = jobs.filter(job => job.status === 'paused').length; return paused ? `На паузе: ${paused}` : 'Нет активных загрузок'; }
+  const speed = active.reduce((sum, job) => sum + (Number(job.speed) || 0), 0);
+  const word = active.length === 1 ? 'активная' : active.length < 5 ? 'активные' : 'активных';
+  return [`${active.length} ${word}`, speed ? `${bytes(speed)}/с` : ''].filter(Boolean).join(' · ');
 }
 function renderJobs() {
   const jobs = Array.isArray(state.jobs) ? state.jobs : [];
   const activeCount = jobs.filter(job => ACTIVE.has(job.status)).length;
-  $('navCount').textContent = String(activeCount);
+  $('navCount').textContent = String(activeCount); $('navCount').hidden = activeCount === 0; $('downloadsSummary').textContent = summaryText(jobs);
   const queue = jobs.filter(job => job.status !== 'completed');
   const filtered = queue.filter(job => ui.filter === 'active' ? ACTIVE.has(job.status) : ui.filter === 'paused' ? job.status === 'paused' : true);
   $('queueCount').textContent = String(queue.length); $('queueEmpty').hidden = queue.length !== 0;
@@ -125,10 +155,14 @@ function renderJobs() {
   $('jobsList').replaceChildren(...queueNodes);
   const history = jobs.filter(job => job.status === 'completed'); const recordings = Array.isArray(state.recordings) ? state.recordings : [];
   const recordingCards = recordings.map(recording => {
-    const card = el('article', 'job-card'); const thumbnail = el('div', 'job-thumbnail'); thumbnail.append(icon('record'));
-    const body = el('div', 'job-body'); const title = el('h3', 'job-title', recording.title || 'Запись экрана');
-    const meta = el('div', 'job-meta', ['Запись экрана', bytes(recording.bytes), recording.date ? new Date(recording.date).toLocaleDateString('ru-RU') : '', recording.status === 'partial' ? 'Частичная запись' : ''].filter(Boolean).join(' · ')); body.append(title, meta);
-    const actions = el('div', 'job-actions'); actions.append(buttonIcon('play', 'Открыть запись', () => call('openRecording', recording.id)), buttonIcon('folder', 'Показать в папке', () => call('showRecording', recording.id))); card.append(thumbnail, body, actions); return card;
+    const row = el('article', 'job-row'); const name = el('div', 'job-name'); const text = el('div');
+    const title = el('h3', 'job-title', recording.title || 'Запись экрана'); title.title = recording.path || '';
+    text.append(title, el('p', 'job-sub', ['Запись экрана', recording.date ? timeLabel(recording.date) : ''].filter(Boolean).join(' · ')));
+    name.append(el('span', `dot ${recording.status === 'partial' ? 'error' : 'ok'}`), text);
+    const progressCell = el('div', 'job-progress'); const track = el('div', 'track'); const bar = el('i', recording.status === 'partial' ? 'error' : 'ok'); bar.style.width = '100%'; track.append(bar);
+    const file = String(recording.path || '').split(/[\\/]/).pop(); const fileText = el('span', '', recording.status === 'partial' ? `частично · ${file}` : file); fileText.title = recording.path || ''; progressCell.append(track, fileText);
+    const actions = el('div', 'job-actions'); actions.append(buttonIcon('play', 'Открыть запись', () => call('openRecording', recording.id)), buttonIcon('folder', 'Показать в папке', () => call('showRecording', recording.id)));
+    row.append(name, el('span', 'job-format', ['WebM', bytes(recording.bytes)].filter(Boolean).join(' · ')), progressCell, actions); return row;
   });
   $('historyList').replaceChildren(...history.map(jobCard), ...recordingCards); $('historyEmpty').hidden = history.length + recordings.length !== 0; $('historyCount').textContent = `Сохранено: ${history.length + recordings.length}`;
 }
@@ -300,7 +334,11 @@ function bindEvents() {
   $('defaultQuality').addEventListener('change', () => runAction(() => saveSettings({ quality: $('defaultQuality').value })));
   $('concurrency').addEventListener('change', () => runAction(() => saveSettings({ concurrency: Number($('concurrency').value) })));
   document.querySelectorAll('[data-theme]').forEach(button => button.addEventListener('click', () => runAction(() => saveSettings({ theme: button.dataset.theme }))));
-  $('quickTheme').addEventListener('click', () => runAction(() => saveSettings({ theme: state.settings.theme === 'light' ? 'dark' : 'light' })));
+  $('quickTheme').addEventListener('click', () => runAction(() => saveSettings({ theme: resolvedTheme() === 'light' ? 'dark' : 'light' })));
+  systemDark.addEventListener('change', applyTheme);
+  for (const id of ['closeToTray', 'launchAtLogin']) $(id).addEventListener('change', () => runAction(() => saveSettings({ [id]: $(id).checked })));
+  if (api?.onAnalyze) api.onAnalyze(url => { closeModal(); navigate('downloads'); $('videoUrl').value = url; analyzeUrl(); });
+  if (api?.onNotice) api.onNotice(text => toast(text));
   $('refreshSources').addEventListener('click', () => runAction(refreshSources, $('refreshSources')));
   $('startRecording').addEventListener('click', () => runAction(beginCapture));
   $('copyRecordPath').addEventListener('click', () => runAction(async () => { if (ui.lastRecordingPath) { await navigator.clipboard.writeText(ui.lastRecordingPath); toast('Путь скопирован'); } }));

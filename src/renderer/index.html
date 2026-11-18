@@ -3,74 +3,122 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https: http:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'self'">
-  <title>PULL — Video workspace</title>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data: https: http:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'self'">
+  <title>PULL</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <header class="titlebar"><a class="brand" href="#downloads" aria-label="PULL: загрузки"><img src="../assets/pull.png" alt="">PULL</a><span class="titlebar-sep">/</span><span class="titlebar-page" id="titlebarPage">Загрузки</span></header>
   <div class="app-shell">
-    <aside class="sidebar">
-      <a class="brand" href="#downloads" aria-label="PULL — Загрузки"><span class="brand-mark"><i></i><i></i><i></i></span>PULL<span class="brand-dot">®</span></a>
-      <div class="workspace-label">VIDEO WORKSPACE <span>01</span></div>
-      <nav class="navigation" aria-label="Основная навигация">
-        <button class="nav-item active" data-route="downloads"><span data-icon="download"></span><span>Загрузки</span><span class="nav-count" id="navCount">0</span></button>
-        <button class="nav-item" data-route="browser"><span data-icon="globe"></span><span>Браузер</span><span class="nav-dot" id="mediaDot" hidden></span></button>
-        <button class="nav-item" data-route="recording"><span data-icon="record"></span><span>Запись экрана</span></button>
-        <button class="nav-item" data-route="history"><span data-icon="history"></span><span>История</span></button>
-      </nav>
-      <div class="sidebar-bottom">
-        <div class="engine-status"><span class="status-light" id="engineLight"></span><div><span id="engineLabel">Подключение</span><small id="engineDetail">Подготовка приложения</small></div></div>
-        <button class="nav-item" data-route="settings"><span data-icon="settings"></span><span>Настройки</span></button>
-        <div class="sidebar-footer"><span>DESIGNED TO KEEP.</span><button id="quickTheme" class="icon-button" title="Сменить тему" aria-label="Сменить тему"><span data-icon="sun"></span></button></div>
+    <nav class="rail" aria-label="Основная навигация">
+      <button class="rail-item active" data-route="downloads" title="Загрузки" aria-label="Загрузки"><span data-icon="download"></span><span class="rail-badge" id="navCount" hidden>0</span></button>
+      <button class="rail-item" data-route="browser" title="Браузер" aria-label="Браузер"><span data-icon="globe"></span><span class="rail-dot" id="mediaDot" hidden></span></button>
+      <button class="rail-item" data-route="recording" title="Запись экрана" aria-label="Запись экрана"><span data-icon="record"></span></button>
+      <button class="rail-item" data-route="history" title="История" aria-label="История"><span data-icon="history"></span></button>
+      <div class="rail-bottom">
+        <button id="quickTheme" class="rail-item" title="Сменить тему" aria-label="Сменить тему"><span data-icon="moon"></span></button>
+        <button class="rail-item" data-route="settings" title="Настройки" aria-label="Настройки"><span data-icon="settings"></span></button>
       </div>
-    </aside>
+    </nav>
 
     <main class="main-area">
-      <header class="page-header"><div class="breadcrumb">МОЯ БИБЛИОТЕКА <span>/</span> <span id="breadcrumbCurrent">ЗАГРУЗКИ</span></div><div class="header-right"><span class="local-tag"><span></span>Локально на компьютере</span></div></header>
-
       <section class="page active" id="page-downloads" aria-labelledby="downloadsTitle">
-        <div class="page-heading"><div><p class="eyebrow">СОХРАНИ ТО, ЧТО ВАЖНО</p><h1 id="downloadsTitle">Твои видео.<br><span class="muted">Теперь у тебя.</span></h1></div><span class="heading-glyph" data-icon="arrow-down-right"></span></div>
-        <form class="link-panel" id="analyzeForm"><label for="videoUrl" class="panel-label"><span data-icon="link"></span>ССЫЛКА НА ВИДЕО</label><div class="link-input-row"><input id="videoUrl" type="text" placeholder="Вставь ссылку на видео или страницу" autocomplete="off" spellcheck="false" required><button class="button button-primary" id="analyzeButton" type="submit">Найти видео<span data-icon="arrow-right"></span></button></div><div class="link-panel-footer"><span>Видео со страниц, прямые ссылки и потоки</span><button id="pasteLink" class="text-button" type="button"><span data-icon="clipboard"></span>Вставить из буфера</button></div></form>
+        <header class="page-top"><h1 id="downloadsTitle">Загрузки</h1><p class="page-meta" id="downloadsSummary">Нет активных загрузок</p></header>
+        <form class="command" id="analyzeForm">
+          <span class="command-icon" data-icon="link"></span>
+          <input id="videoUrl" type="text" placeholder="Вставь ссылку на видео или страницу" autocomplete="off" spellcheck="false" required aria-label="Ссылка на видео">
+          <button id="pasteLink" class="kbd-button" type="button" title="Вставить из буфера"><kbd>Ctrl</kbd><kbd>V</kbd></button>
+          <button class="button button-primary" id="analyzeButton" type="submit">Найти<kbd class="kbd-on-dark">↵</kbd></button>
+        </form>
+        <div class="chips">
+          <button class="chip" type="button" data-route="settings">Качество <b id="chipQuality">Лучшее</b></button>
+          <button class="chip" type="button" data-route="settings">Параллельно <b id="chipConcurrency">2</b></button>
+          <button class="chip chip-folder" type="button" id="changeFolderInline" title="Изменить папку"><span data-icon="folder"></span><b id="downloadDirectory">Папка загрузок</b></button>
+          <button class="chip chip-ghost" type="button" id="emptyOpenBrowser"><span data-icon="globe"></span>Найти на сайте</button>
+        </div>
         <div class="engine-banner" id="engineBanner" hidden><span data-icon="info"></span><span id="engineBannerText"></span></div>
-        <div class="section-heading"><div class="section-title">Очередь <span id="queueCount" class="count-label">0</span></div><div class="segmented" id="queueFilters"><button class="selected" data-filter="all">Все</button><button data-filter="active">Активные</button><button data-filter="paused">На паузе</button></div></div>
-        <div class="jobs-list" id="jobsList"></div>
-        <div class="empty-state" id="queueEmpty"><div class="empty-symbol"><span data-icon="download"></span><span class="empty-cross">+</span></div><h2>Начнём с одной ссылки</h2><p>Вставь адрес выше — PULL найдёт доступные форматы<br>и сохранит видео в выбранную папку.</p><button class="text-button" id="emptyOpenBrowser">Открыть сайт в браузере<span data-icon="arrow-up-right"></span></button></div>
-        <div class="workspace-note"><span data-icon="folder"></span><span id="downloadDirectory">Папка загрузок</span><button class="text-button" id="changeFolderInline">Изменить</button></div>
+        <div class="table">
+          <div class="table-head">
+            <div class="table-title">Очередь <span id="queueCount" class="count">0</span></div>
+            <div class="segmented" id="queueFilters"><button class="selected" data-filter="all">Все</button><button data-filter="active">Активные</button><button data-filter="paused">На паузе</button></div>
+          </div>
+          <div class="columns" aria-hidden="true"><span>Название</span><span>Формат</span><span>Прогресс</span><span></span></div>
+          <div class="jobs-list" id="jobsList"></div>
+          <div class="empty-state" id="queueEmpty"><p>Очередь пуста. Вставь ссылку выше, PULL найдёт форматы и сохранит видео в папку.</p></div>
+        </div>
       </section>
 
       <section class="page browser-page" id="page-browser" aria-labelledby="browserTitle">
-        <div class="compact-heading"><div><p class="eyebrow">НАЙТИ В ПОТОКЕ</p><h1 id="browserTitle">Встроенный браузер</h1></div><span class="subtle-label">Открой сайт и включи видео</span></div>
-        <form class="browser-toolbar" id="browserForm"><div class="browser-navigation"><button type="button" class="icon-button" id="browserBack" title="Назад" aria-label="Назад"><span data-icon="arrow-left"></span></button><button type="button" class="icon-button" id="browserForward" title="Вперёд" aria-label="Вперёд"><span data-icon="arrow-right"></span></button><button type="button" class="icon-button" id="browserReload" title="Обновить" aria-label="Обновить"><span data-icon="refresh"></span></button></div><div class="browser-address"><span data-icon="globe"></span><input id="browserUrl" type="text" placeholder="https://example.com/video" spellcheck="false" autocomplete="off" required></div><button class="button button-primary button-small" type="submit">Открыть<span data-icon="arrow-right"></span></button></form>
-        <div class="browser-workspace"><div id="browserSlot" class="browser-slot"><div class="browser-welcome"><div class="empty-symbol"><span data-icon="globe"></span></div><h2>Видео начинается здесь</h2><p>Открой страницу и нажми Play на видео.<br>Доступные потоки появятся справа.</p><span class="browser-hint">HLS · DASH · MP4 · WEBM</span></div></div><aside class="media-panel"><div class="media-panel-heading"><h2>Найдено <span id="mediaCount">0</span></h2><button id="clearCandidates" class="icon-button" title="Очистить список" aria-label="Очистить найденные потоки"><span data-icon="trash"></span></button></div><p class="media-intro">Потоки с открытых страниц</p><div id="candidateList" class="candidate-list"></div><div class="media-empty" id="mediaEmpty"><span data-icon="radar"></span><h3>Слушаем страницу</h3><p>Запусти воспроизведение.<br>Иногда сначала появляется реклама — выбирай нужный поток.</p></div><div class="media-footnote"><span data-icon="info"></span><span>Доступность зависит от сайта. Защищённые DRM-потоки не скачиваются.</span></div></aside></div>
+        <header class="page-top"><h1 id="browserTitle">Браузер</h1><p class="page-meta">Открой сайт и включи видео, потоки появятся справа</p></header>
+        <form class="command command-compact" id="browserForm">
+          <div class="browser-navigation"><button type="button" class="icon-button" id="browserBack" title="Назад" aria-label="Назад"><span data-icon="arrow-left"></span></button><button type="button" class="icon-button" id="browserForward" title="Вперёд" aria-label="Вперёд"><span data-icon="arrow-right"></span></button><button type="button" class="icon-button" id="browserReload" title="Обновить" aria-label="Обновить"><span data-icon="refresh"></span></button></div>
+          <input id="browserUrl" type="text" placeholder="https://example.com/video" spellcheck="false" autocomplete="off" required aria-label="Адрес страницы">
+          <button class="button button-primary" type="submit">Открыть<kbd class="kbd-on-dark">↵</kbd></button>
+        </form>
+        <div class="browser-workspace">
+          <div id="browserSlot" class="browser-slot"><div class="browser-welcome"><h2>Открой страницу с видео</h2><p>Нажми Play, PULL поймает поток.</p><span class="mono faint">HLS · DASH · MP4 · WEBM</span></div></div>
+          <aside class="media-panel">
+            <div class="media-panel-heading"><h2>Найдено <span id="mediaCount" class="count">0</span></h2><button id="clearCandidates" class="icon-button" title="Очистить список" aria-label="Очистить найденные потоки"><span data-icon="trash"></span></button></div>
+            <div id="candidateList" class="candidate-list"></div>
+            <div class="media-empty" id="mediaEmpty"><p>Пока пусто. Запусти воспроизведение. Если сначала идёт реклама, выбери нужный поток.</p></div>
+            <p class="media-footnote">Доступность зависит от сайта. Потоки с DRM не скачиваются.</p>
+          </aside>
+        </div>
       </section>
 
       <section class="page" id="page-recording" aria-labelledby="recordingTitle">
-        <div class="compact-heading"><div><p class="eyebrow">КОГДА НУЖНА ЗАПИСЬ</p><h1 id="recordingTitle">Запись экрана</h1></div><span class="record-state" id="recordState">Готово к записи</span></div>
-        <div class="record-intro"><div class="record-intro-icon"><span data-icon="record"></span></div><div><h2>Сохрани то, что воспроизводится</h2><p>Выбери экран или окно. Запись сохранится в WebM в папке загрузок. Записываются только видимые изображение и доступный системный звук.</p></div></div>
-        <div class="section-heading"><div class="section-title">Источник записи</div><button id="refreshSources" class="text-button"><span data-icon="refresh"></span>Обновить</button></div>
-        <div id="captureSources" class="capture-sources"></div><div id="captureSourcesEmpty" class="inline-empty">Нажми «Выбрать источник», чтобы показать доступные экраны и окна.</div>
-        <div class="record-controls"><div class="record-detail"><span class="record-time" id="recordTime">00:00</span><span id="recordInfo">Источник не выбран</span></div><button id="startRecording" class="button button-primary"><span data-icon="record"></span>Выбрать источник</button></div>
+        <header class="page-top"><h1 id="recordingTitle">Запись экрана</h1><p class="page-meta record-state" id="recordState">Готово к записи</p></header>
+        <div class="record-bar">
+          <div class="record-detail"><span class="record-time" id="recordTime">00:00</span><span id="recordInfo">Источник не выбран</span></div>
+          <button id="startRecording" class="button button-primary"><span data-icon="record"></span>Выбрать источник</button>
+        </div>
+        <div class="table">
+          <div class="table-head"><div class="table-title">Источник</div><button id="refreshSources" class="text-button"><span data-icon="refresh"></span>Обновить</button></div>
+          <div id="captureSources" class="capture-sources"></div>
+          <div id="captureSourcesEmpty" class="empty-state"><p>Нажми «Выбрать источник», чтобы показать экраны и окна.</p></div>
+        </div>
         <div class="record-result" id="recordResult" hidden><span data-icon="check"></span><div><strong>Запись сохранена</strong><p id="recordPath"></p></div><button id="copyRecordPath" class="text-button">Копировать путь</button></div>
-        <p class="page-footnote">При включённом системном звуке записываются все звуки компьютера. Звук зависит от поддержки системы. Защищённое видео может отображаться чёрным кадром. Во время записи оставь нужное окно открытым.</p>
+        <p class="footnote">Запись сохраняется в WebM в папку загрузок. С системным звуком записываются все звуки компьютера. Защищённое видео может выглядеть чёрным кадром. Во время записи не закрывай нужное окно.</p>
       </section>
 
       <section class="page" id="page-history" aria-labelledby="historyTitle">
-        <div class="compact-heading"><div><p class="eyebrow">СОХРАНЕНО У ТЕБЯ</p><h1 id="historyTitle">История загрузок</h1></div><span class="subtle-label" id="historyCount">0 видео</span></div>
-        <div id="historyList" class="jobs-list"></div><div id="historyEmpty" class="empty-state"><div class="empty-symbol"><span data-icon="history"></span></div><h2>Здесь будут твои видео</h2><p>Завершённые загрузки появятся здесь.<br>Открывай файлы или переходи в их папку.</p></div>
+        <header class="page-top"><h1 id="historyTitle">История</h1><p class="page-meta" id="historyCount">Сохранено: 0</p></header>
+        <div class="table">
+          <div class="columns" aria-hidden="true"><span>Название</span><span>Формат</span><span>Файл</span><span></span></div>
+          <div id="historyList" class="jobs-list"></div>
+          <div id="historyEmpty" class="empty-state"><p>Здесь появятся завершённые загрузки и записи экрана.</p></div>
+        </div>
       </section>
 
       <section class="page" id="page-settings" aria-labelledby="settingsTitle">
-        <div class="compact-heading"><div><p class="eyebrow">ПОД ТВОЙ РИТМ</p><h1 id="settingsTitle">Настройки</h1></div></div>
-        <div class="settings-group"><h2>Загрузки</h2><div class="setting-row folder-setting"><div><h3>Папка сохранения</h3><p id="settingsDirectory">Папка загрузок</p></div><button id="chooseFolder" class="button button-secondary button-small"><span data-icon="folder"></span>Выбрать папку</button></div><div class="setting-row"><div><h3>Качество по умолчанию</h3><p>Выберем лучший доступный формат в пределах ограничения</p></div><select id="defaultQuality" class="select-control"><option value="best">Максимальное</option><option value="2160">До 4K</option><option value="1440">До 1440p</option><option value="1080">До 1080p</option><option value="720">До 720p</option><option value="480">До 480p</option></select></div><div class="setting-row"><div><h3>Одновременные загрузки</h3><p>Количество видео, которые скачиваются параллельно</p></div><select id="concurrency" class="select-control"><option value="1">1 загрузка</option><option value="2">2 загрузки</option><option value="3">3 загрузки</option><option value="4">4 загрузки</option></select></div></div>
-        <div class="settings-group"><h2>Внешний вид</h2><div class="setting-row"><div><h3>Тема приложения</h3><p>Выбери комфортный фон для своей работы</p></div><div class="segmented theme-selector"><button id="themeDark" data-theme="dark"><span data-icon="moon"></span>Тёмная</button><button id="themeLight" data-theme="light"><span data-icon="sun"></span>Светлая</button></div></div></div>
-        <div class="settings-group"><h2>Движок</h2><div class="engine-tools"><div><span class="tool-icon" data-icon="terminal"></span><span><strong>yt-dlp</strong><small id="ytDlpStatus">Проверка…</small></span><span class="tool-purpose">Извлечение видео</span></div><div><span class="tool-icon" data-icon="layers"></span><span><strong>FFmpeg</strong><small id="ffmpegStatus">Проверка…</small></span><span class="tool-purpose">Сборка видео и звука</span></div></div><p class="settings-help">PULL обрабатывает ссылки, перехватывает доступные потоки во встроенном браузере и записывает экран. Наличие видео на странице не всегда означает доступность скачивания.</p></div>
-        <div class="settings-group"><h2>Расширение для браузера</h2><div class="setting-row"><div><h3>Chrome и Microsoft Edge</h3><p>Для сайтов, которые удобнее открывать в твоём обычном браузере</p></div><button id="openExtensionFolder" class="button button-secondary button-small"><span data-icon="folder"></span>Папка расширения</button></div><p class="settings-help">Открой страницу расширений в браузере, включи режим разработчика и нажми «Загрузить распакованное расширение». Выбери папку расширения PULL и вставь в его настройках код подключения ниже.</p><div class="extension-pairing"><label for="extensionToken">Код подключения</label><input id="extensionToken" type="password" readonly autocomplete="off" aria-label="Код подключения расширения"><button id="copyExtensionToken" class="text-button"><span data-icon="clipboard"></span>Копировать</button></div><p class="settings-help" id="extensionStatus">Проверка подключения…</p></div>
-        <div class="about-line"><span class="about-brand">PULL</span><span>Твои видео. Твоё пространство.</span><span>Windows · Desktop</span></div>
+        <header class="page-top"><h1 id="settingsTitle">Настройки</h1></header>
+        <div class="settings-group"><h2>Загрузки</h2>
+          <div class="setting-row"><div><h3>Папка сохранения</h3><p class="mono" id="settingsDirectory">Папка загрузок</p></div><button id="chooseFolder" class="button button-secondary"><span data-icon="folder"></span>Выбрать</button></div>
+          <div class="setting-row"><div><h3>Качество по умолчанию</h3><p>Лучший формат в пределах ограничения</p></div><select id="defaultQuality" class="select-control"><option value="best">Лучшее</option><option value="2160">До 4K</option><option value="1440">До 1440p</option><option value="1080">До 1080p</option><option value="720">До 720p</option><option value="480">До 480p</option></select></div>
+          <div class="setting-row"><div><h3>Одновременные загрузки</h3><p>Сколько видео скачивается параллельно</p></div><select id="concurrency" class="select-control"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option></select></div>
+        </div>
+        <div class="settings-group"><h2>Фоновая работа</h2>
+          <div class="setting-row"><div><h3>Сворачивать в трей при закрытии</h3><p>Крестик прячет окно, загрузки продолжаются. Выйти можно из меню значка в трее</p></div><label class="switch"><input type="checkbox" id="closeToTray"><span></span></label></div>
+          <div class="setting-row"><div><h3>Запускать вместе с Windows</h3><p>PULL стартует свёрнутым в трей</p></div><label class="switch"><input type="checkbox" id="launchAtLogin"><span></span></label></div>
+        </div>
+        <div class="settings-group"><h2>Внешний вид</h2>
+          <div class="setting-row"><div><h3>Тема</h3><p>«Как в системе» следует настройке Windows</p></div><div class="segmented"><button id="themeSystem" data-theme="system">Как в системе</button><button id="themeLight" data-theme="light">Светлая</button><button id="themeDark" data-theme="dark">Тёмная</button></div></div>
+        </div>
+        <div class="settings-group"><h2>Движок</h2>
+          <div class="setting-row"><div><h3>yt-dlp</h3><p>Извлечение видео со страниц</p></div><span class="mono faint" id="ytDlpStatus">Проверка…</span></div>
+          <div class="setting-row"><div><h3>FFmpeg</h3><p>Склейка видео и звука, ремукс записей</p></div><span class="mono faint" id="ffmpegStatus">Проверка…</span></div>
+        </div>
+        <div class="settings-group"><h2>Расширение для браузера</h2>
+          <div class="setting-row"><div><h3>Chrome и Microsoft Edge</h3><p>Для сайтов, которые удобнее открыть в обычном браузере</p></div><button id="openExtensionFolder" class="button button-secondary"><span data-icon="folder"></span>Папка расширения</button></div>
+          <div class="setting-row"><div><h3>Код подключения</h3><p id="extensionStatus">Проверка подключения…</p></div><div class="pairing"><input id="extensionToken" type="password" readonly autocomplete="off" aria-label="Код подключения расширения"><button id="copyExtensionToken" class="button button-secondary"><span data-icon="clipboard"></span>Копировать</button></div></div>
+          <p class="footnote">Открой страницу расширений, включи режим разработчика и нажми «Загрузить распакованное». Выбери папку расширения PULL и вставь в его настройках код подключения.</p>
+        </div>
       </section>
+      <footer class="app-footer"><span class="engine-status"><span class="status-light" id="engineLight"></span><span id="engineLabel">Подключение</span><span class="faint" id="engineDetail">Подготовка приложения</span></span><span class="signature">by Cveloy</span></footer>
     </main>
   </div>
 
-  <div class="modal-overlay" id="analysisOverlay" hidden><section class="analysis-modal" role="dialog" aria-modal="true" aria-labelledby="analysisTitle"><div class="modal-top"><span class="eyebrow">ДОБАВИТЬ В ЗАГРУЗКИ</span><button id="closeAnalysis" class="icon-button" title="Закрыть" aria-label="Закрыть"><span data-icon="close"></span></button></div><div id="analysisLoading" class="analysis-loading"><div class="loading-orbit"></div><h2 id="analysisTitle">Ищем доступные форматы</h2><p>Это может занять некоторое время</p></div><div id="analysisContent" hidden><div class="video-summary"><div class="video-thumbnail" id="analysisThumbnail"><span data-icon="play"></span></div><div><h2 id="videoTitle"></h2><p id="videoMeta"></p></div></div><div class="segmented format-type"><button id="formatVideo" class="selected">Видео + звук</button><button id="formatAudio">Только аудио</button></div><label class="field-label" for="formatSelect">Качество</label><select id="formatSelect" class="select-control format-select"></select><p class="format-note" id="formatNote">Раздельные дорожки видео и звука объединяются автоматически.</p><div class="modal-footer"><span id="analysisDestination"></span><button id="confirmDownload" class="button button-primary"><span data-icon="download"></span>Скачать</button></div></div><div id="analysisError" class="analysis-error" hidden><div class="error-symbol"><span data-icon="info"></span></div><h2>Не удалось прочитать ссылку</h2><p id="analysisErrorText"></p><button id="analysisOpenBrowser" class="button button-secondary">Открыть в браузере<span data-icon="arrow-up-right"></span></button></div></section></div>
+  <div class="modal-overlay" id="analysisOverlay" hidden><section class="analysis-modal" role="dialog" aria-modal="true" aria-labelledby="analysisTitle"><div class="modal-top"><span class="modal-label">Добавить в загрузки</span><button id="closeAnalysis" class="icon-button" title="Закрыть" aria-label="Закрыть"><span data-icon="close"></span></button></div><div id="analysisLoading" class="analysis-loading"><div class="loading-line"><i></i></div><h2 id="analysisTitle">Ищу доступные форматы</h2><p>Обычно это занимает несколько секунд</p></div><div id="analysisContent" hidden><div class="video-summary"><div class="video-thumbnail" id="analysisThumbnail"><span data-icon="play"></span></div><div><h2 id="videoTitle"></h2><p id="videoMeta"></p></div></div><div class="segmented format-type"><button id="formatVideo" class="selected">Видео и звук</button><button id="formatAudio">Только звук</button></div><label class="field-label" for="formatSelect">Качество</label><select id="formatSelect" class="select-control format-select"></select><p class="format-note" id="formatNote">Раздельные дорожки видео и звука объединяются автоматически.</p><div class="modal-footer"><span class="mono" id="analysisDestination"></span><button id="confirmDownload" class="button button-primary"><span data-icon="download"></span>Скачать<kbd class="kbd-on-dark">↵</kbd></button></div></div><div id="analysisError" class="analysis-error" hidden><h2>Не удалось прочитать ссылку</h2><p id="analysisErrorText"></p><button id="analysisOpenBrowser" class="button button-secondary">Открыть в браузере<span data-icon="arrow-up-right"></span></button></div></section></div>
   <div class="toast-container" id="toasts" aria-live="polite" aria-atomic="true"></div>
   <script src="renderer.js"></script>
 </body>

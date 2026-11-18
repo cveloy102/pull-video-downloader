@@ -2,10 +2,36 @@ const fs = require('node:fs');
 const fsp = fs.promises;
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { spawn } = require('node:child_process');
+
+// MediaRecorder writes WebM without a duration or seek index (Cues), so players
+// cannot seek in it. A lossless FFmpeg stream copy adds both in seconds.
+function remux(ffmpeg, file, { spawnProcess = spawn, timeout = 10 * 60 * 1000 } = {}) {
+  const temporary = `${file}.remux.webm`;
+  return new Promise((resolve) => {
+    let child, timer, done = false;
+    const finish = async (ok) => {
+      if (done) return;
+      done = true; clearTimeout(timer);
+      try {
+        if (ok && (await fsp.stat(temporary)).size > 0) { await fsp.rename(temporary, file); resolve(true); return; }
+      } catch { /* fall through: keep the original recording */ }
+      await fsp.unlink(temporary).catch(() => {});
+      resolve(false);
+    };
+    try {
+      child = spawnProcess(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-i', file, '-map', '0', '-c', 'copy', '-f', 'webm', temporary], { shell: false, windowsHide: true, stdio: 'ignore' });
+    } catch { finish(false); return; }
+    timer = setTimeout(() => { try { child.kill(); } catch {} finish(false); }, timeout);
+    child.on('error', () => finish(false));
+    child.on('close', (code) => finish(code === 0));
+  });
+}
 
 class RecordingManager {
-  constructor({ dataDir, onChange = () => {} }) {
+  constructor({ dataDir, onChange = () => {}, getFfmpeg = () => null, spawnProcess = spawn }) {
     this.dataDir = dataDir; this.onChange = onChange; this.active = new Map();
+    this.getFfmpeg = getFfmpeg; this._spawn = spawnProcess;
     try { this.history = JSON.parse(fs.readFileSync(path.join(dataDir, 'recordings.json'), 'utf8')); if (!Array.isArray(this.history)) this.history = []; } catch { this.history = []; }
   }
   getState() { return this.history.map(item => ({ ...item })); }
@@ -45,7 +71,13 @@ class RecordingManager {
       try { await item.chain; await item.handle.sync(); } catch (error) { failure = error; }
       await item.handle.close(); this.active.delete(id);
       if (!item.bytes) { await fsp.unlink(item.path).catch(() => {}); throw failure || new Error('Пустая запись: видео не поступило.'); }
-      this.history.unshift({ id, title: item.title, path: item.path, bytes: item.bytes, date: new Date().toISOString(), status: failure ? 'partial' : 'completed' });
+      let bytes = item.bytes;
+      let ffmpeg = null;
+      try { ffmpeg = this.getFfmpeg(); } catch { /* recording stays as written */ }
+      if (ffmpeg && await remux(ffmpeg, item.path, { spawnProcess: this._spawn })) {
+        bytes = await fsp.stat(item.path).then((stat) => stat.size, () => bytes);
+      }
+      this.history.unshift({ id, title: item.title, path: item.path, bytes, date: new Date().toISOString(), status: failure ? 'partial' : 'completed' });
       this.history = this.history.slice(0, 100);
       await fsp.writeFile(path.join(this.dataDir, 'recordings.json'), JSON.stringify(this.history, null, 2)); this.onChange();
       if (failure) throw new Error('Сохранена только часть записи: ' + failure.message);
@@ -56,4 +88,4 @@ class RecordingManager {
   getFile(id) { const item = this.history.find(record => record.id === id); if (!item || !fs.existsSync(item.path)) throw new Error('Запись не найдена.'); return item.path; }
   async dispose() { await Promise.allSettled([...this.active.keys()].map(id => this.finish(id))); }
 }
-module.exports = { RecordingManager };
+module.exports = { RecordingManager, remux };

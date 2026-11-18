@@ -1,4 +1,5 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, desktopCapturer, Menu } = require('electron');
+const electron = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, desktopCapturer, Menu, nativeTheme, clipboard } = electron;
 const fs = require('node:fs');
 const fsp = fs.promises;
 const path = require('node:path');
@@ -8,6 +9,7 @@ const { pathToFileURL } = require('node:url');
 const { DownloadManager } = require('./download-manager.cjs');
 const { BrowserManager } = require('./browser-manager.cjs');
 const { RecordingManager } = require('./recording-manager.cjs');
+const { createTray } = require('./tray.cjs');
 
 if (process.env.PULL_DATA_DIR) app.setPath('userData', path.resolve(process.env.PULL_DATA_DIR));
 const appRoot = path.resolve(__dirname, '..');
@@ -19,11 +21,54 @@ const toolsDir = process.env.PULL_TOOLS_DIR || path.join(resourcesDir, 'tools');
 const extensionPath = app.isPackaged ? path.join(dataDir, 'browser-extension') : path.join(resourcesDir, 'extension');
 let mainWindow, downloader, browser, recordings, server, selectedSource, broadcastTimer;
 let shuttingDown = false;
+let quitting = false;
 let extensionAvailable = false;
 let extensionError = '';
-let settings;
+let settings, tray;
+const startHidden = process.argv.includes('--hidden');
+// One pixel shorter than the 36px title bar so its bottom border runs under the caption buttons.
+const TITLEBAR_HEIGHT = 35;
 if (!app.requestSingleInstanceLock()) app.exit(0);
-app.on('second-instance', () => { if (mainWindow && !mainWindow.isDestroyed()) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.show(); mainWindow.focus(); } });
+app.on('second-instance', () => showWindow());
+
+function showWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show(); mainWindow.focus();
+}
+function isDark() { return settings.theme === 'dark' || (settings.theme === 'system' && nativeTheme.shouldUseDarkColors); }
+// Window background and the native caption buttons follow the app theme.
+function applyChrome() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const dark = isDark();
+  mainWindow.setBackgroundColor(windowBackground());
+  try { mainWindow.setTitleBarOverlay({ color: dark ? '#0f0f10' : '#fbfbfa', symbolColor: dark ? '#ededec' : '#111111', height: TITLEBAR_HEIGHT }); } catch { /* overlay unsupported */ }
+}
+// Autostart runs the real executable: for the portable build that is the
+// launcher file, not the temporary unpacked copy.
+function applyLoginItem() {
+  if (!app.isPackaged) return;
+  const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+  try { app.setLoginItemSettings({ openAtLogin: Boolean(settings.launchAtLogin), path: exe, args: ['--hidden'] }); } catch { /* not available */ }
+}
+function requestQuit() {
+  if (recordings?.isActive()) {
+    showWindow();
+    const choice = dialog.showMessageBoxSync(mainWindow, { type: 'question', buttons: ['Продолжить запись', 'Выйти и сохранить'], defaultId: 0, cancelId: 0, title: 'Идёт запись', message: 'Выйти из PULL и сохранить записанную часть?' });
+    if (choice === 1) { quitting = true; mainWindow.webContents.send('pull:before-close'); }
+    return;
+  }
+  quitting = true; app.quit();
+}
+async function downloadFromClipboard() {
+  // readText may be synchronous or return a promise depending on the Electron version.
+  const text = String((await clipboard.readText()) || '').trim();
+  showWindow();
+  if (/^https?:\/\/\S+$/i.test(text)) mainWindow.webContents.send('pull:analyze', text);
+  else mainWindow.webContents.send('pull:notice', 'В буфере обмена нет ссылки');
+}
+function pauseAll() { for (const job of downloader.getState()) if (['queued', 'downloading', 'analyzing'].includes(job.status)) downloader.pause(job.id); }
+function resumeAll() { for (const job of downloader.getState()) if (job.status === 'paused' && !job.needsSource) { try { downloader.resume(job.id); } catch { /* source expired */ } } }
 
 function readJSON(file, fallback) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; } }
 function persistSettings() {
@@ -35,7 +80,7 @@ function snapshot() {
   const tools = downloader?.getTools() || {};
   return {
     version: app.getVersion(),
-    settings: { theme: settings.theme, directory: settings.directory, quality: settings.quality, concurrency: settings.concurrency },
+    settings: { theme: settings.theme, directory: settings.directory, quality: settings.quality, concurrency: settings.concurrency, closeToTray: settings.closeToTray, launchAtLogin: settings.launchAtLogin },
     jobs: downloader?.getState() || [],
     ...(browser?.getState() || { candidates: [], browser: {} }),
     recordings: recordings?.getState() || [],
@@ -43,7 +88,10 @@ function snapshot() {
     extension: { port: 17841, token: settings.extensionToken, available: extensionAvailable, path: extensionPath, error: extensionError }
   };
 }
+// Matches --bg in renderer/styles.css so the window does not flash the other theme on start.
+function windowBackground() { return isDark() ? '#0f0f10' : '#fbfbfa'; }
 function broadcast() {
+  tray?.update();
   if (broadcastTimer || shuttingDown) return;
   broadcastTimer = setTimeout(() => {
     broadcastTimer = null;
@@ -85,7 +133,9 @@ function registerIPC() {
   });
   handle('updateSettings', patch => {
     if (!patch || typeof patch !== 'object') throw new Error('Некорректные настройки.');
-    if (['dark', 'light', 'system'].includes(patch.theme)) settings.theme = patch.theme;
+    if (['dark', 'light', 'system'].includes(patch.theme)) { settings.theme = patch.theme; applyChrome(); }
+    if (typeof patch.closeToTray === 'boolean') settings.closeToTray = patch.closeToTray;
+    if (typeof patch.launchAtLogin === 'boolean') { settings.launchAtLogin = patch.launchAtLogin; applyLoginItem(); }
     if (['best', '4320', '2160', '1440', '1080', '720', '480'].includes(String(patch.quality))) settings.quality = String(patch.quality);
     if (patch.concurrency !== undefined) { settings.concurrency = Math.max(1, Math.min(5, Math.round(Number(patch.concurrency) || 2))); downloader.setConcurrency(settings.concurrency); }
     persistSettings(); broadcast(); return snapshot().settings;
@@ -159,7 +209,10 @@ app.whenReady().then(async () => {
   if (app.isPackaged) fs.cpSync(path.join(resourcesDir, 'extension'), extensionPath, { recursive: true });
   const saved = readJSON(path.join(dataDir, 'settings.json'), {});
   settings = {
-    theme: ['dark','light','system'].includes(saved.theme) ? saved.theme : 'dark',
+    theme: ['dark','light','system'].includes(saved.theme) ? saved.theme : 'light',
+    closeToTray: typeof saved.closeToTray === 'boolean' ? saved.closeToTray : true,
+    launchAtLogin: saved.launchAtLogin === true,
+    trayHintShown: saved.trayHintShown === true,
     directory: typeof saved.directory === 'string' && path.isAbsolute(saved.directory) ? saved.directory : path.join(app.getPath('videos'), 'PULL'),
     quality: ['best','4320','2160','1440','1080','720','480'].includes(saved.quality) ? saved.quality : 'best',
     concurrency: Math.max(1, Math.min(5, Number(saved.concurrency) || 2)),
@@ -167,8 +220,11 @@ app.whenReady().then(async () => {
   };
   persistSettings();
   downloader = new DownloadManager({ toolsDir, dataDir, downloadDir: settings.directory, concurrency: settings.concurrency, onChange: broadcast });
-  recordings = new RecordingManager({ dataDir, onChange: broadcast });
-  mainWindow = new BrowserWindow({ width: 1280, height: 850, minWidth: 940, minHeight: 660, title: 'PULL', icon: path.join(__dirname, 'assets', 'pull.ico'), backgroundColor: '#111312', show: false,
+  recordings = new RecordingManager({ dataDir, onChange: broadcast, getFfmpeg: () => downloader.getTools().ffmpeg });
+  const dark = isDark();
+  mainWindow = new BrowserWindow({ width: 1280, height: 850, minWidth: 940, minHeight: 660, title: 'PULL', icon: path.join(__dirname, 'assets', 'pull.ico'), backgroundColor: windowBackground(), show: false,
+    // The app draws its own title bar; Windows keeps the native caption buttons (snap layouts included).
+    titleBarStyle: 'hidden', titleBarOverlay: { color: dark ? '#0f0f10' : '#fbfbfa', symbolColor: dark ? '#ededec' : '#111111', height: TITLEBAR_HEIGHT },
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true, spellcheck: false }
   });
   Menu.setApplicationMenu(null);
@@ -189,24 +245,46 @@ app.whenReady().then(async () => {
     } catch { callback({}); }
   });
   registerIPC(); startExtensionBridge();
-  mainWindow.once('ready-to-show', () => mainWindow.show());
+  mainWindow.once('ready-to-show', () => { if (!startHidden) mainWindow.show(); });
   mainWindow.on('close', event => {
-    if (!shuttingDown && recordings.isActive()) {
+    if (quitting || shuttingDown) return;
+    if (settings.closeToTray) {
+      // Closing hides to the tray: downloads and recordings keep running.
+      event.preventDefault(); mainWindow.hide();
+      if (!settings.trayHintShown && electron.Notification.isSupported()) {
+        settings.trayHintShown = true; persistSettings();
+        new electron.Notification({ title: 'PULL работает в фоне', body: 'Загрузки продолжаются. Открыть или выйти можно через значок в трее.', icon: path.join(__dirname, 'assets', 'pull.png') }).show();
+      }
+      return;
+    }
+    if (recordings.isActive()) {
       const choice = dialog.showMessageBoxSync(mainWindow, { type: 'question', buttons: ['Продолжить запись', 'Закрыть и сохранить'], defaultId: 0, cancelId: 0, title: 'Идёт запись', message: 'Закрыть PULL и сохранить записанную часть?' });
       event.preventDefault();
-      if (choice === 1) mainWindow.webContents.send('pull:before-close');
+      if (choice === 1) { quitting = true; mainWindow.webContents.send('pull:before-close'); }
     }
   });
+  nativeTheme.on('updated', applyChrome);
+  applyLoginItem();
+  tray = createTray({ electron, iconDir: path.join(__dirname, 'assets'), getJobs: () => downloader.getState(), actions: {
+    show: showWindow,
+    toggle: () => { if (mainWindow.isVisible() && !mainWindow.isMinimized() && mainWindow.isFocused()) mainWindow.hide(); else showWindow(); },
+    shouldNotify: () => !mainWindow.isVisible() || !mainWindow.isFocused(),
+    showFile: id => { const job = downloader.getState().find(item => item.id === id); if (job?.filename && fs.existsSync(job.filename)) shell.showItemInFolder(job.filename); },
+    setProgress: value => { if (!mainWindow.isDestroyed()) mainWindow.setProgressBar(value); },
+    downloadFromClipboard, pauseAll, resumeAll,
+    openFolder: () => { fs.mkdirSync(settings.directory, { recursive: true }); shell.openPath(settings.directory); },
+    quit: requestQuit
+  } });
   await mainWindow.loadFile(rendererFile);
   // Electron integration tests opt in via an explicit development-only environment flag.
-  if (!app.isPackaged && process.env.PULL_TEST_MODULE) require(path.resolve(process.env.PULL_TEST_MODULE))({ app, mainWindow, downloader, browser, recordings, snapshot });
+  if (!app.isPackaged && process.env.PULL_TEST_MODULE) require(path.resolve(process.env.PULL_TEST_MODULE))({ app, mainWindow, downloader, browser, recordings, snapshot, requestQuit, downloadFromClipboard, pauseAll, resumeAll, getSettings: () => settings });
 }).catch(error => { dialog.showErrorBox('PULL не удалось запустить', error.message); app.exit(1); });
 
 app.on('window-all-closed', () => app.quit());
 app.on('before-quit', event => {
   if (shuttingDown) return;
-  event.preventDefault(); shuttingDown = true;
+  event.preventDefault(); shuttingDown = true; quitting = true;
   clearTimeout(broadcastTimer);
-  server?.close(); browser?.dispose();
+  server?.close(); browser?.dispose(); tray?.destroy();
   Promise.allSettled([Promise.resolve(downloader?.dispose()), Promise.resolve(recordings?.dispose())]).then(() => app.quit());
 });

@@ -36,6 +36,13 @@ function publicUrl(raw) {
   } catch { return ''; }
 }
 
+// Query keys that typically carry signatures, expiring tokens or credentials.
+const SENSITIVE_QUERY = /token|sig|auth|key|expire|^exp$|session|^sid$|hash|hmac|policy|credential|secret|pass|^acl$|hdnts|^x-amz-/i;
+
+function hasSensitiveQuery(raw) {
+  try { return [...new URL(raw).searchParams.keys()].some((key) => SENSITIVE_QUERY.test(key)); } catch { return true; }
+}
+
 function redact(text) {
   return String(text || '').replace(/https?:\/\/[^\s<>"']+/gi, (url) => publicUrl(url))
     .replace(/\b(?:authorization|cookie|set-cookie|token|password|secret|signature)\s*[:=]\s*[^\r\n]+/gi, '[данные авторизации скрыты]')
@@ -59,7 +66,9 @@ function privateOptions(extra = {}) {
 function describeError(message, code = 'DOWNLOAD_FAILED') {
   const safe = redact(message);
   if (/DRM|Widevine|FairPlay|PlayReady/i.test(safe)) return { code: 'DRM', message: 'Поток защищён DRM. Этот тип защиты не поддерживается.' };
-  if (/403|401|login|log in|sign in|cookies|authentication|Unauthorized|Forbidden/i.test(safe)) {
+  // Match HTTP status codes and yt-dlp's auth hints only in context: a bare
+  // "403" inside an ID or file size, or any mention of cookies, is not an auth error.
+  if (/HTTP Error 40[13]\b|\b40[13]\s+(?:Forbidden|Unauthorized)\b|\bForbidden\b|\bUnauthorized\b|login required|requires? (?:a )?log ?in|\b(?:sign|log) in to\b|use --cookies|cookies? (?:are |is )?(?:needed|required)|requires? authentication|authentication (?:is )?required/i.test(safe)) {
     return { code: 'AUTH_REQUIRED', message: 'Сайт требует актуальную сессию. Откройте его во встроенном браузере, войдите и запустите видео.' };
   }
   if (/Unsupported URL|no video formats|Unable to extract|No video could be found/i.test(safe)) {
@@ -112,6 +121,15 @@ class DownloadManager {
   }
 
   getTools() {
+    // getState snapshots call this many times per second. Once all tools are
+    // found the result is cached; while something is missing it is re-checked,
+    // so tools installed during a session are picked up without a restart.
+    if (this._tools?.ready) return this._tools;
+    this._tools = this._findTools();
+    return this._tools;
+  }
+
+  _findTools() {
     const roots = [this.toolsDir, process.env.PULL_TOOLS_DIR, process.resourcesPath && path.join(process.resourcesPath, 'tools'), path.resolve(__dirname, '..', 'tools')].filter(Boolean);
     const find = (name) => roots.map((root) => path.join(root, process.platform === 'win32' ? `${name}.exe` : name)).find((file) => fs.existsSync(file));
     const ytDlp = find('yt-dlp'), ffmpeg = find('ffmpeg'), ffprobe = find('ffprobe'), node = find('node');
@@ -149,9 +167,10 @@ class DownloadManager {
         const { extra, formats, ...safe } = job;
         // Session headers, cookie file paths and signed URLs are never written
         // to history. Ordinary page IDs remain resumable after restart.
-        const cleanUrl = publicUrl(job.url);
-        safe.requiresSession = Boolean(job.requiresSession || extra?.cookieFile || Object.keys(extra?.headers || {}).length || cleanUrl !== job.url);
-        safe.url = cleanUrl;
+        // Ordinary parameters (playlist position, timestamps, page IDs) are kept
+        // so the job stays resumable; signed or tokenized URLs are stripped.
+        safe.requiresSession = Boolean(job.requiresSession || extra?.cookieFile || Object.keys(extra?.headers || {}).length || hasSensitiveQuery(job.url));
+        safe.url = safe.requiresSession ? publicUrl(job.url) : job.url;
         if (safe.thumbnail) safe.thumbnail = publicUrl(safe.thumbnail);
         return safe;
       });
@@ -283,7 +302,8 @@ class DownloadManager {
     if (!job || job.status === 'completed') return false;
     job.status = 'cancelled'; job.speed = 0; job.eta = null;
     const active = this.processes.get(id);
-    if (active) this._stop(active.child);
+    // A running process still holds its fragments; they are removed when it exits.
+    if (active) this._stop(active.child); else this._cleanupParts(job);
     this._cleanupCookie(job);
     this._changed(true); this._drain(); return true;
   }
@@ -324,8 +344,9 @@ class DownloadManager {
       if (job.audioOnly) args.push('--extract-audio', '--audio-format', 'best');
       args.push('--', job.url);
       job.status = 'downloading'; job.error = null; job.errorCode = null;
+      if (!fs.existsSync(tools.ytDlp)) { this._tools = null; throw new DownloadError('TOOLS_MISSING', 'yt-dlp не найден. Перезапустите PULL или запустите scripts/setup-tools.ps1.'); }
       child = this._spawn(tools.ytDlp, args, { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-      const record = { child, stderr: '', stdoutPending: '', stderrPending: '', finalized: false };
+      const record = { child, stderr: '', warnings: '', stdoutPending: '', stderrPending: '', finalized: false };
       this.processes.set(job.id, record);
       child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
       const read = (chunk, stream) => {
@@ -348,10 +369,12 @@ class DownloadManager {
             job.status = 'completed'; job.progress = 100; job.completedAt = new Date().toISOString(); job.error = null;
             this._cleanupCookie(job);
           } else {
-            const failure = describeError(error?.message || record.stderr || (code === 0 ? 'Загрузчик завершился, но итоговый файл не найден.' : `Загрузчик завершился с кодом ${code}.`));
+            const failure = describeError(error?.message || record.stderr || record.warnings || (code === 0 ? 'Загрузчик завершился, но итоговый файл не найден.' : `Загрузчик завершился с кодом ${code}.`));
             job.status = 'error'; job.error = failure.message; job.errorCode = failure.code;
           }
         }
+        // Temporary fragments are kept only while the job can still be resumed.
+        if (['completed', 'cancelled'].includes(job.status)) this._cleanupParts(job);
         job.speed = 0; job.eta = null;
         this._changed(true); this._drain();
       };
@@ -387,7 +410,10 @@ class DownloadManager {
       } catch { /* Only yt-dlp's final JSON path is accepted. */ }
     } else if (line.startsWith('__PULL_POST__') || /^\[(Merger|ExtractAudio|VideoRemuxer|Fixup)/.test(line)) {
       job.status = 'merging'; job.speed = 0; job.eta = null; this._changed(true);
-    } else if (/ERROR:|WARNING:|error|failed/i.test(line)) {
+    } else if (/^\s*WARNING:/i.test(line)) {
+      // Warnings are only a fallback explanation: they must not mask the real error.
+      record.warnings = `${record.warnings}\n${redact(line)}`.slice(-3000);
+    } else if (/ERROR:|error|failed/i.test(line)) {
       record.stderr = `${record.stderr}\n${redact(line)}`.slice(-6000);
     }
   }
@@ -399,6 +425,22 @@ class DownloadManager {
       const killer = this._spawn(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe'), ['/pid', String(child.pid), '/T', '/F'], { shell: false, windowsHide: true, stdio: 'ignore' });
       killer.on('error', () => { try { child.kill(); } catch {} });
     } else { try { child.kill('SIGTERM'); } catch {} }
+  }
+
+  _partsDir(job) {
+    if (typeof job.directory !== 'string' || !/^[a-f0-9-]{36}$/.test(job.id)) return null;
+    return path.join(job.directory, '.pull-parts', job.id);
+  }
+
+  _cleanupParts(job) {
+    const parts = this._partsDir(job);
+    if (!parts) return;
+    const root = path.dirname(parts);
+    // Asynchronous with retries: on Windows FFmpeg may release its handles a
+    // moment after yt-dlp exits. The shared folder is removed only when empty.
+    fs.promises.rm(parts, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 })
+      .then(() => fs.promises.rmdir(root))
+      .catch(() => {});
   }
 
   _cleanupCookie(job) {

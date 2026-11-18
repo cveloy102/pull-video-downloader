@@ -7,4 +7,9 @@ PULL runs the following separately bundled executables. Their licenses remain ap
 * FFmpeg and FFprobe — GPL build from https://github.com/yt-dlp/FFmpeg-Builds. Matching release/build information and source archives are provided there; upstream source: https://ffmpeg.org/download.html#get-sources. Preserve the files in resources/tools/ffmpeg-licenses.
 * Node.js — MIT and bundled dependency licenses, https://github.com/nodejs/node/blob/main/LICENSE. Source versions: https://nodejs.org/en/download/archive.
 
+The interface embeds these fonts (Latin and Cyrillic subsets from Google Fonts) in src/renderer/fonts:
+
+* Inter Tight — SIL Open Font License 1.1, https://github.com/googlefonts/inter-tight.
+* JetBrains Mono — SIL Open Font License 1.1, https://github.com/JetBrains/JetBrainsMono.
+
 The setup script records the acquired versions next to the tools. No claim is made that these projects endorse PULL.

@@ -119,3 +119,13 @@ test('OAuth popups preserve sandbox and isolated session; privileged navigation 
   wc.emit('will-frame-navigate', { url: 'blob:https://site.example/player', preventDefault() { prevented = true; } });
   assert.equal(prevented, false);
 });
+
+test('cookie jars left by a previous run are removed on start', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pull-browser-stale-'));
+  const stale = path.join(root, 'capture-cookies', 'old.txt');
+  await fs.mkdir(path.dirname(stale), { recursive: true });
+  await fs.writeFile(stale, 'secret');
+  new BrowserManager({ window: null, dataDir: root });
+  await assert.rejects(fs.access(stale));
+  await fs.rm(root, { recursive: true, force: true });
+});
