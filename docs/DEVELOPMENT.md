@@ -5,6 +5,7 @@
 ```powershell
 pnpm install
 node scripts/setup-tools.cjs
+pnpm icons     # пересобрать иконки, если менялся скрипт
 pnpm test
 pnpm start
 pnpm dist
@@ -14,4 +15,4 @@ pnpm dist
 
 Приложение построено на Electron. Внешние страницы работают в изолированном Chromium без Node.js. Расширение подключается к локальному серверу с индивидуальным токеном; код находится в `extension/`.
 
-Тесты загрузок, браузера и записи: `tests/`. Готовый файл создаётся в `dist/`. [Компоненты и лицензии](../THIRD-PARTY-NOTICES.md), [проверки поставки](../VALIDATION.md).
+Тесты загрузок, браузера, записи и трея: `tests/`. `pnpm dist` создаёт в `dist/` установщик `PULL-Setup-*.exe` и портативную версию. [Компоненты и лицензии](../THIRD-PARTY-NOTICES.md), [проверки поставки](../VALIDATION.md).
