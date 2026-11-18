@@ -62,6 +62,8 @@
             <button id="mediaOthers" class="text-button" type="button" hidden>Другие варианты</button>
             <select id="mediaQuality" class="select-control" aria-label="Качество" hidden><option value="best">Лучшее качество</option><option value="1080">До 1080p</option><option value="720">До 720p</option><option value="480">До 480p</option><option value="audio">Только звук</option></select>
             <button id="mediaDownload" class="button button-primary" type="button" hidden><span data-icon="download"></span>Скачать</button>
+            <button id="mediaResume" class="button button-primary" type="button" hidden>Продолжить этим видео</button>
+            <button id="cancelSource" class="text-button" type="button" hidden>Отмена</button>
             <button id="mediaOpenDownloads" class="button button-secondary" type="button" hidden>Открыть загрузки</button>
           </div>
           <div class="media-bar-progress" id="mediaProbing" hidden><i></i></div>
@@ -116,7 +118,7 @@
           <div class="setting-row"><div><h3>Тема</h3><p>«Как в системе» следует настройке Windows</p></div><div class="segmented"><button id="themeSystem" data-theme="system">Как в системе</button><button id="themeLight" data-theme="light">Светлая</button><button id="themeDark" data-theme="dark">Тёмная</button></div></div>
         </div>
         <div class="settings-group"><h2>Обновления</h2>
-          <div class="setting-row"><div><h3>PULL <span class="mono" id="appVersion"></span></h3><p id="updateStatus">Проверка обновлений…</p></div><div class="pairing"><button id="checkUpdates" class="button button-secondary"><span data-icon="refresh"></span>Проверить</button><button id="installUpdate" class="button button-primary" hidden>Перезапустить и обновить</button></div></div>
+          <div class="setting-row"><div><h3>PULL <span class="mono" id="appVersion"></span></h3><p id="updateStatus" aria-live="polite">Проверка обновлений…</p></div><div class="pairing"><button id="checkUpdates" class="button button-secondary"><span data-icon="refresh"></span>Проверить</button><button id="installUpdate" class="button button-primary" hidden>Перезапустить и обновить</button></div></div>
         </div>
         <div class="settings-group"><h2>Движок</h2>
           <div class="setting-row"><div><h3>yt-dlp</h3><p>Извлечение видео со страниц</p></div><span class="mono faint" id="ytDlpStatus">Проверка…</span></div>
@@ -128,7 +130,7 @@
           <p class="footnote">Открой страницу расширений, включи режим разработчика и нажми «Загрузить распакованное». Выбери папку расширения PULL и вставь в его настройках код подключения.</p>
         </div>
       </section>
-      <footer class="app-footer"><span class="engine-status"><span class="status-light" id="engineLight"></span><span id="engineLabel">Подключение</span><span class="faint" id="engineDetail">Подготовка приложения</span></span><span class="footer-right"><button class="update-pill" id="footerUpdate" type="button" hidden></button><span class="signature">by Cveloy</span></span></footer>
+      <footer class="app-footer"><span class="engine-status"><span class="status-light" id="engineLight"></span><span id="engineLabel">Подключение</span><span class="faint" id="engineDetail">Подготовка приложения</span></span><span class="footer-right"><button class="update-pill" id="footerUpdate" type="button" hidden></button><span class="update-applied" id="updateApplied" role="status" hidden></span><span class="signature">by Cveloy</span></span></footer>
     </main>
   </div>
 

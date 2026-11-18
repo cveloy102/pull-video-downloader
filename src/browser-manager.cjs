@@ -109,7 +109,7 @@ class BrowserManager {
     this.sniffCount = 0;
     this.cookieFiles = new Set();
     this.bounds = { x: 0, y: 0, width: 0, height: 0, visible: false };
-    this.browser = { url: '', title: '', loading: false, canGoBack: false, canGoForward: false, error: '' };
+    this.browser = { url: '', title: '', loading: false, canGoBack: false, canGoForward: false, error: '', pageId: 0 };
     this.disposed = false;
     // Cookie jars from a previous run belong to sessions that are no longer
     // resumable (history never keeps them), so leftovers after a crash are removed.
@@ -165,8 +165,8 @@ class BrowserManager {
     this._emit();
   }
 
-  clearPageCandidates() {
-    if (!this.candidates.size) return;
+  beginPageNavigation() {
+    this.browser.pageId += 1;
     this.candidates.clear();
     this._emit();
   }
@@ -199,11 +199,12 @@ class BrowserManager {
     this.session.webRequest.onSendHeaders(FILTER, details => {
       if (!isOurs(details) || details.method !== 'GET') return;
       if (this.requests.size >= MAX_REQUESTS) this.requests.delete(this.requests.keys().next().value);
-      this.requests.set(details.id, { url: details.url, headers: details.requestHeaders, referrer: details.referrer });
+      this.requests.set(details.id, { pageId: this.browser.pageId, headers: details.requestHeaders, referrer: details.referrer });
     });
     this.session.webRequest.onResponseStarted(FILTER, details => {
       if (!isOurs(details) || details.method !== 'GET' || details.statusCode < 200 || details.statusCode >= 300) return;
-      const meta = this.requests.get(details.id) || {};
+      const meta = this.requests.get(details.id);
+      if (!meta || meta.pageId !== this.browser.pageId) return;
       const source = this.remoteContents.get(details.webContentsId) || wc;
       this._addCandidate({ url: details.url, title: source.getTitle(), mimeType: getHeader(details.responseHeaders, 'content-type'), responseHeaders: details.responseHeaders, headers: meta.headers, referrer: meta.referrer, source: 'browser' });
     });
@@ -217,7 +218,7 @@ class BrowserManager {
     this._guardContents(wc);
     for (const event of ['did-start-loading', 'did-stop-loading', 'did-navigate', 'did-navigate-in-page', 'page-title-updated']) wc.on(event, () => this._updateBrowser());
     // "Found" always means "on this page": a new page starts with an empty list.
-    wc.on('did-start-navigation', (event, _url, isInPlace, isMainFrame) => { if ((event.isMainFrame ?? isMainFrame) && !(event.isSameDocument ?? isInPlace)) this.clearPageCandidates(); });
+    wc.on('did-start-navigation', (event, _url, isInPlace, isMainFrame) => { if ((event.isMainFrame ?? isMainFrame) && !(event.isSameDocument ?? isInPlace)) this.beginPageNavigation(); });
     wc.on('did-fail-load', (_event, code, description, _url, isMainFrame) => {
       if (isMainFrame && code !== -3) { this.browser.error = `Не удалось открыть страницу (${description}).`; this._updateBrowser(); }
     });
@@ -273,13 +274,13 @@ class BrowserManager {
       const requestKey = `${wc.id}:${params.requestId}`;
       if (method === 'Network.requestWillBeSent') {
         if (this.cdpRequests.size >= 400) this.cdpRequests.delete(this.cdpRequests.keys().next().value);
-        this.cdpRequests.set(requestKey, { url: params.request.url, method: params.request.method, headers: params.request.headers, type: params.type });
+        this.cdpRequests.set(requestKey, { url: params.request.url, method: params.request.method, headers: params.request.headers, pageId: this.browser.pageId });
       } else if (method === 'Network.requestWillBeSentExtraInfo') {
         const entry = this.cdpRequests.get(requestKey);
         if (entry) entry.headers = { ...entry.headers, ...params.headers };
       } else if (method === 'Network.responseReceived') {
         const entry = this.cdpRequests.get(requestKey);
-        if (!entry || entry.method !== 'GET' || params.response.status < 200 || params.response.status >= 300) return;
+        if (!entry || entry.pageId !== this.browser.pageId || entry.method !== 'GET' || params.response.status < 200 || params.response.status >= 300) return;
         const response = params.response;
         entry.url = response.url;
         entry.mime = response.mimeType;
@@ -290,10 +291,10 @@ class BrowserManager {
       } else if (method === 'Network.loadingFinished') {
         const entry = this.cdpRequests.get(requestKey);
         this.cdpRequests.delete(requestKey);
-        if (!entry?.sniff || params.encodedDataLength > 262144 || this.sniffCount >= 80) return;
+        if (!entry?.sniff || entry.pageId !== this.browser.pageId || params.encodedDataLength > 262144 || this.sniffCount >= 80) return;
         this.sniffCount++;
         void debuggerApi.sendCommand('Network.getResponseBody', { requestId: params.requestId }).then(result => {
-          if (this.disposed || wc.isDestroyed() || result.body.length > 350000) return;
+          if (this.disposed || entry.pageId !== this.browser.pageId || wc.isDestroyed() || result.body.length > 350000) return;
           const body = result.base64Encoded ? Buffer.from(result.body, 'base64').toString('utf8') : result.body;
           const mimeType = sniffManifest(body);
           if (mimeType) this._addCandidate({ url: entry.url, title: wc.getTitle(), mimeType, headers: entry.headers, source: 'browser' });
@@ -312,11 +313,13 @@ class BrowserManager {
     this.browser.error = '';
     this.browser.url = url;
     this.browser.loading = true;
-    this._emit();
+    this.beginPageNavigation();
+    let opened = true;
     try { await view.webContents.loadURL(url); } catch (error) {
+      opened = false;
       if (error.code !== 'ERR_ABORTED') { this.browser.error = 'Не удалось открыть страницу. Проверьте адрес и подключение.'; this.browser.loading = false; this._emit(); }
     }
-    return this.getState();
+    return { ...this.getState(), opened };
   }
 
   back() { const wc = this.view?.webContents; if (wc && wc.navigationHistory.canGoBack()) wc.navigationHistory.goBack(); return this.getState(); }
@@ -374,9 +377,15 @@ class BrowserManager {
     return { id, ...this.getState() };
   }
 
-  async resolveCandidate(id) {
+  async resolveCandidate(id, { pageId } = {}) {
     const candidate = this.candidates.get(id);
     if (!candidate) throw new Error('Поток больше недоступен. Найдите его повторно.');
+    const requireCurrentPage = () => {
+      if (pageId !== undefined && (pageId !== this.browser.pageId || this.candidates.get(id) !== candidate || candidate.source !== 'browser')) {
+        throw new Error('Страница изменилась. Откройте источник загрузки снова.');
+      }
+    };
+    requireCurrentPage();
     const headers = replayHeaders(candidate.headers);
     const host = candidate.host;
     let cookies = [];
@@ -399,7 +408,16 @@ class BrowserManager {
       await fs.writeFile(cookieFile, cookieJar(cookies, host), { mode: 0o600, flag: 'wx' });
       this.cookieFiles.add(cookieFile);
     }
-    return { url: candidate.url, title: candidate.title, pageUrl: candidate.pageUrl || undefined, duration: candidate.probe?.duration ?? undefined, extra: { headers, ...(cookieFile ? { cookieFile } : {}) } };
+    try {
+      requireCurrentPage();
+      return { url: candidate.url, title: candidate.title, pageUrl: candidate.pageUrl || undefined, duration: candidate.probe?.duration ?? undefined, extra: { headers, ...(cookieFile ? { cookieFile } : {}) } };
+    } catch (error) {
+      if (cookieFile) {
+        await fs.unlink(cookieFile).catch(() => {});
+        this.cookieFiles.delete(cookieFile);
+      }
+      throw error;
+    }
   }
 
   dispose() {

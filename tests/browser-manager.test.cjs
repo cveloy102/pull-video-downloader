@@ -146,8 +146,30 @@ test('caught media is measured once and the main video is marked as best', async
   const best = state.candidates.find((item) => item.best);
   assert.equal(best.kind, 'hls'); assert.equal(best.duration, 1800); assert.equal(best.height, 1080);
   assert.equal(state.candidates.find((item) => item.ad).host, 'ads.example.net');
-  browser.clearPageCandidates();
+  browser.beginPageNavigation();
   assert.equal(browser.getState().candidates.length, 0);
+});
+
+test('resume only resolves captures belonging to the current page', async () => {
+  const browser = new BrowserManager({ window: null, dataDir: null });
+  const oldPage = browser.getState().browser.pageId;
+  const input = { url: 'https://cdn.example/video.mp4', source: 'browser' };
+  const id = browser._addCandidate(input);
+  browser.beginPageNavigation();
+  browser._addCandidate(input);
+  await assert.rejects(browser.resolveCandidate(id, { pageId: oldPage }), /Страница изменилась/);
+
+  const pageId = browser.getState().browser.pageId;
+  assert.equal((await browser.resolveCandidate(id, { pageId })).url, input.url);
+  const external = browser.addExternalCandidate({ url: 'https://cdn.example/other.mp4' });
+  await assert.rejects(browser.resolveCandidate(external.id, { pageId }), /Страница изменилась/);
+
+  let releaseCookies;
+  browser.session = { cookies: { get: () => new Promise(resolve => { releaseCookies = resolve; }) } };
+  const resolving = browser.resolveCandidate(id, { pageId });
+  browser.beginPageNavigation();
+  releaseCookies([]);
+  await assert.rejects(resolving, /Страница изменилась/);
 });
 
 test('a measurement that fails once is retried before the stream is given up', async () => {

@@ -31,21 +31,24 @@ function remux(ffmpeg, file, { spawnProcess = spawn, timeout = 10 * 60 * 1000 } 
 class RecordingManager {
   constructor({ dataDir, onChange = () => {}, getFfmpeg = () => null, spawnProcess = spawn }) {
     this.dataDir = dataDir; this.onChange = onChange; this.active = new Map();
-    this.getFfmpeg = getFfmpeg; this._spawn = spawnProcess;
+    this.getFfmpeg = getFfmpeg; this._spawn = spawnProcess; this.starting = null;
     try { this.history = JSON.parse(fs.readFileSync(path.join(dataDir, 'recordings.json'), 'utf8')); if (!Array.isArray(this.history)) this.history = []; } catch { this.history = []; }
   }
   getState() { return this.history.map(item => ({ ...item })); }
-  isActive() { return this.active.size > 0; }
+  isActive() { return Boolean(this.starting) || this.active.size > 0; }
   async start({ name, directory }) {
     if (this.isActive()) throw new Error('Запись уже идёт.');
-    await fsp.mkdir(directory, { recursive: true });
-    const id = crypto.randomUUID();
-    const title = String(name || 'Запись').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').trim().slice(0, 80) || 'Запись';
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const file = path.join(directory, `${title} ${timestamp}.webm`);
-    const handle = await fsp.open(file, 'wx');
-    this.active.set(id, { id, title, path: file, handle, bytes: 0, chain: Promise.resolve() });
-    return { id };
+    this.starting = (async () => {
+      await fsp.mkdir(directory, { recursive: true });
+      const id = crypto.randomUUID();
+      const title = String(name || 'Запись').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').trim().slice(0, 80) || 'Запись';
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const file = path.join(directory, `${title} ${timestamp}.webm`);
+      const handle = await fsp.open(file, 'wx');
+      this.active.set(id, { id, title, path: file, handle, bytes: 0, chain: Promise.resolve() });
+      return { id };
+    })();
+    try { return await this.starting; } finally { this.starting = null; }
   }
   async append({ id, data } = {}) {
     const item = this.active.get(id);
@@ -69,7 +72,7 @@ class RecordingManager {
     item.finishPromise = (async () => {
       let failure;
       try { await item.chain; await item.handle.sync(); } catch (error) { failure = error; }
-      await item.handle.close(); this.active.delete(id);
+      await item.handle.close();
       if (!item.bytes) { await fsp.unlink(item.path).catch(() => {}); throw failure || new Error('Пустая запись: видео не поступило.'); }
       let bytes = item.bytes;
       let ffmpeg = null;
@@ -82,10 +85,13 @@ class RecordingManager {
       await fsp.writeFile(path.join(this.dataDir, 'recordings.json'), JSON.stringify(this.history, null, 2)); this.onChange();
       if (failure) throw new Error('Сохранена только часть записи: ' + failure.message);
       return { path: item.path };
-    })();
+    })().finally(() => this.active.delete(id));
     return item.finishPromise;
   }
   getFile(id) { const item = this.history.find(record => record.id === id); if (!item || !fs.existsSync(item.path)) throw new Error('Запись не найдена.'); return item.path; }
-  async dispose() { await Promise.allSettled([...this.active.keys()].map(id => this.finish(id))); }
+  async dispose() {
+    if (this.starting) await this.starting.catch(() => {});
+    await Promise.allSettled([...this.active.keys()].map(id => this.finish(id)));
+  }
 }
 module.exports = { RecordingManager, remux };

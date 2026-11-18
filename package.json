@@ -1,6 +1,6 @@
 {
   "name": "pull-video",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "PULL — загрузка видео и поиск потоков в браузере",
   "main": "src/main.cjs",
   "author": "Cveloy",
@@ -9,9 +9,9 @@
     "start": "electron .",
     "test": "node --test tests/*.test.cjs",
     "icons": "electron scripts/make-icons.cjs",
-    "dist": "electron-builder --win nsis --x64 --publish never",
-    "setup": "electron-builder --win nsis --x64 --publish never",
-    "pack": "electron-builder --win dir --x64"
+    "dist": "node scripts/build-windows.cjs",
+    "setup": "node scripts/build-windows.cjs",
+    "pack": "node scripts/build-windows.cjs --dir"
   },
   "devDependencies": {
     "electron": "44.5.1",
@@ -32,6 +32,10 @@
       "package.json"
     ],
     "extraResources": [
+      {
+        "from": "installer/windows/PULL-UpdateWindow.exe",
+        "to": "PULL-UpdateWindow.exe"
+      },
       {
         "from": "tools",
         "to": "tools",
@@ -71,7 +75,9 @@
       "deleteAppDataOnUninstall": true,
       "installerIcon": "src/assets/pull.ico",
       "uninstallerIcon": "src/assets/pull.ico",
-      "installerHeaderIcon": "src/assets/pull.ico",
+      "include": "installer/windows/installer.nsh",
+      "installerHeader": "installer/windows/header.bmp",
+      "installerSidebar": "installer/windows/sidebar.bmp",
       "uninstallDisplayName": "PULL",
       "installerLanguages": [
         "ru_RU"
