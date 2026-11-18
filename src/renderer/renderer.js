@@ -30,7 +30,7 @@ const ICONS = {
 
 const $ = (id) => document.getElementById(id);
 const api = window.pull;
-const ui = { route: 'downloads', filter: 'all', analysis: null, analysisUrl: '', audioOnly: false, analysisToken: 0, modal: false, captureSources: [], selectedSource: null, recorder: null, captureStream: null, recordingId: null, recordingStarted: 0, recordingTimer: null, chunkWrites: Promise.resolve(), recordingError: null, lastRecordingId: null, lastRecordingPath: null, captureBusy: false, lastCandidates: '', resumeJob: null, resumeTried: new Set(), resumedIds: new Set(), downloadedIds: new Set(), autoTried: new Set(), browserReason: '', lastJobs: '', lastBounds: '', closeRequested: false, finishPromise: null };
+const ui = { route: 'downloads', filter: 'all', analysis: null, analysisUrl: '', audioOnly: false, analysisToken: 0, modal: false, captureSources: [], selectedSource: null, recorder: null, captureStream: null, recordingId: null, recordingStarted: 0, recordingTimer: null, chunkWrites: Promise.resolve(), recordingError: null, lastRecordingId: null, lastRecordingPath: null, captureBusy: false, lastCandidates: '', resumeJob: null, resumedIds: new Set(), downloadedIds: new Set(), autoTried: new Set(), browserReason: '', lastJobs: '', lastBounds: '', closeRequested: false, finishPromise: null };
 let state = { settings: { theme: 'light', closeToTray: true, launchAtLogin: false, directory: '', quality: 'best', concurrency: 2 }, jobs: [], recordings: [], candidates: [], browser: {}, tools: {} };
 const ACTIVE = new Set(['queued', 'analyzing', 'downloading', 'merging', 'processing', 'starting']);
 
@@ -81,6 +81,7 @@ function applyTheme() {
 }
 const QUALITY_LABELS = { best: 'Лучшее', 4320: '8K', 2160: 'До 4K', 1440: 'До 1440p', 1080: 'До 1080p', 720: 'До 720p', 480: 'До 480p' };
 async function saveSettings(patch) { await call('updateSettings', patch); state.settings = { ...state.settings, ...patch }; renderSettings(); }
+let reportedUpdateVersion = '';
 function renderUpdate() {
   const update = state.update || {}; const version = state.version || '';
   $('appVersion').textContent = version ? 'v' + version : '';
@@ -88,18 +89,34 @@ function renderUpdate() {
     disabled: 'Обновления работают в установленной версии',
     idle: 'Проверю обновления в фоне',
     checking: 'Проверяю обновления…',
-    latest: 'Установлена последняя версия',
+    latest: update.appliedVersion ? 'Обновлено до ' + update.appliedVersion : 'Установлена последняя версия',
+    unavailable: 'Файл обновления пока недоступен',
     downloading: 'Загружаю версию ' + update.version + (update.percent ? ' · ' + update.percent + '%' : '') + '…',
-    ready: 'Версия ' + update.version + ' загружена. Установится при перезапуске',
+    ready: update.error || 'Версия ' + update.version + ' готова к установке',
+    installing: 'Устанавливаю версию ' + update.version + '…',
     error: update.error || 'Не удалось проверить обновления'
   }[update.status] || '';
   $('updateStatus').textContent = text;
-  $('checkUpdates').hidden = update.status === 'ready'; $('checkUpdates').disabled = ['checking', 'downloading', 'disabled'].includes(update.status);
-  $('installUpdate').hidden = update.status !== 'ready';
+  $('checkUpdates').hidden = ['ready', 'installing'].includes(update.status);
+  $('checkUpdates').disabled = ['checking', 'downloading', 'disabled'].includes(update.status);
+  $('installUpdate').hidden = !['ready', 'installing'].includes(update.status);
+  $('installUpdate').disabled = update.status === 'installing';
+  $('installUpdate').textContent = update.status === 'installing' ? 'Обновление…' : 'Перезапустить и обновить';
   const pill = $('footerUpdate');
-  pill.hidden = !['downloading', 'ready'].includes(update.status);
+  const active = ['downloading', 'ready', 'installing'].includes(update.status);
+  pill.hidden = !active;
+  pill.dataset.status = update.status || '';
   pill.disabled = update.status !== 'ready';
-  pill.textContent = update.status === 'ready' ? 'Обновить до ' + update.version : 'Загружаю обновление ' + (update.percent || 0) + '%';
+  if (update.status === 'ready') pill.textContent = 'Обновить до ' + update.version;
+  else if (update.status === 'installing') pill.textContent = 'Устанавливаю обновление…';
+  else pill.textContent = 'Загружаю обновление ' + (update.percent || 0) + '%';
+  const applied = $('updateApplied');
+  applied.hidden = active || !update.appliedVersion;
+  applied.textContent = update.appliedVersion ? '✓ Обновлено до ' + update.appliedVersion : '';
+  if (update.appliedVersion && reportedUpdateVersion !== update.appliedVersion) {
+    reportedUpdateVersion = update.appliedVersion;
+    toast('PULL обновлён до версии ' + update.appliedVersion);
+  }
 }
 function renderSettings() {
   const settings = state.settings || {}; const directory = settings.directory || 'Выбери папку в настройках';
@@ -244,19 +261,23 @@ async function downloadFound(candidate, quality = 'best', automatic = false) {
   toast(automatic ? 'Видео найдено и добавлено в загрузки' : 'Видео добавлено в загрузки');
 }
 async function openSource(job) {
-  ui.resumeJob = { id: job.id, title: job.title, duration: job.duration || null };
   ui.browserReason = '';
-  await openBrowser(job.pageUrl);
+  await openBrowser(job.pageUrl, { id: job.id, title: job.title, duration: job.duration, pageId: null, busy: false });
 }
-// Same video when both lengths are known and close; an unknown length trusts PULL's choice.
-function sameLength(a, b) { return !a || !b || Math.abs(a - b) <= 3; }
 async function continueWith(candidate) {
-  const job = ui.resumeJob; if (!job) return;
-  ui.resumeTried.add(candidate.id);
-  await call('reattachCandidate', { jobId: job.id, candidateId: candidate.id });
-  ui.resumeJob = null; ui.downloadedIds.add(candidate.id); ui.resumedIds.add(candidate.id);
-  renderBrowser(true);
-  toast('Загрузка «' + job.title + '» продолжена');
+  const job = ui.resumeJob;
+  if (!job || job.busy || job.pageId !== state.browser?.pageId) return;
+  job.busy = true;
+  renderBrowser();
+  try {
+    await call('reattachCandidate', { jobId: job.id, candidateId: candidate.id, pageId: job.pageId });
+    if (ui.resumeJob === job) ui.resumeJob = null;
+    ui.downloadedIds.add(candidate.id); ui.resumedIds.add(candidate.id);
+    toast('Загрузка «' + job.title + '» продолжена');
+  } finally {
+    job.busy = false;
+    renderBrowser();
+  }
 }
 function setMediaBar(stateName, title, meta, iconName) {
   $('mediaBar').dataset.state = stateName;
@@ -268,22 +289,29 @@ function renderBrowser(force = false) {
   if (document.activeElement !== $('browserUrl')) $('browserUrl').value = browser.url && browser.url !== 'about:blank' ? browser.url : '';
   $('browserBack').disabled = !browser.canGoBack; $('browserForward').disabled = !browser.canGoForward;
   $('browserReload').classList.toggle('busy', Boolean(browser.loading));
-  const candidates = Array.isArray(state.candidates) ? state.candidates : [];
+  const resuming = ui.resumeJob;
+  const sourceReady = resuming && resuming.pageId === browser.pageId && !browser.loading && !browser.error;
+  const candidates = (state.candidates || []).filter(candidate => !resuming || (
+    sourceReady && candidate.source === 'browser' && candidate.probeStatus === 'ready' && candidate.kind !== 'audio' && !candidate.ad
+  ));
   const media = state.media || {};
-  const best = candidates.find(candidate => candidate.id === media.best) || null;
+  const best = candidates.find(candidate => candidate.id === media.best) || (resuming ? candidates[0] : null);
   const others = candidates.filter(candidate => candidate !== best);
   $('mediaDot').hidden = !best;
-  const key = JSON.stringify([candidates, media, ui.browserReason, [...ui.downloadedIds], state.settings?.autoDownloadFound, ui.resumeJob]);
+  const key = JSON.stringify([candidates, media, ui.browserReason, [...ui.downloadedIds], state.settings?.autoDownloadFound, resuming, browser.pageId, browser.loading, browser.error]);
   if (!force && key === ui.lastCandidates) return; ui.lastCandidates = key;
 
   // One card: hint, then checking, then found (or added). Everything else lives under "other options".
   const added = Boolean(best && ui.downloadedIds.has(best.id));
-  const resuming = ui.resumeJob;
-  if (resuming && best && !added && sameLength(resuming.duration, best.duration) && !ui.resumeTried.has(best.id)) {
-    runAction(() => continueWith(best));
-  }
-  if (resuming && !(best && sameLength(resuming.duration, best.duration))) {
-    setMediaBar(media.probing ? 'probing' : 'resume', 'Продолжаю «' + resuming.title + '»', media.probing ? 'Проверяю найденное видео…' : 'Включите это видео на странице, загрузка продолжится сама', 'refresh');
+  if (resuming) {
+    const original = ['Продолжить «' + resuming.title + '»', resuming.duration ? seconds(resuming.duration) : ''].filter(Boolean).join(' · ');
+    let hint = 'Включите исходное видео, затем подтвердите найденный поток';
+    if (browser.error) hint = browser.error;
+    else if (resuming.pageId === null || browser.loading) hint = 'Открываю источник…';
+    else if (resuming.pageId !== browser.pageId) hint = 'Страница изменилась. Откройте источник из очереди снова';
+    else if (best) hint = 'Найдено: ' + [best.title, mediaMeta(best)].filter(Boolean).join(' · ');
+    else if (media.probing) hint = 'Проверяю найденное видео…';
+    setMediaBar('resume', original, hint, 'refresh');
   } else if (best) {
     const lowNote = media.confidence === 'low' ? ' · короткое видео' : '';
     if (added) setMediaBar('added', ui.resumedIds.has(best.id) ? 'Загрузка продолжена' : 'Видео добавлено в загрузки', best.title || browser.title || 'Видео', 'check');
@@ -291,8 +319,12 @@ function renderBrowser(force = false) {
   } else if (media.probing) setMediaBar('probing', 'Проверяю найденное видео…', 'Отсеиваю рекламу и выбираю лучшее качество', 'radar');
   else if (candidates.length) setMediaBar('hint', 'Основное видео пока не найдено', 'Включите нужное видео. Если сначала идёт реклама, дождитесь её конца', 'play');
   else setMediaBar('hint', 'Включите видео на странице', ui.browserReason || 'PULL найдёт его сам и предложит скачать', 'play');
-  $('mediaProbing').hidden = !media.probing || Boolean(best);
-  $('mediaDownload').hidden = !best || added; $('mediaQuality').hidden = !best || added; $('mediaOpenDownloads').hidden = !added;
+  $('mediaProbing').hidden = !media.probing || Boolean(best) || Boolean(resuming && !sourceReady);
+  $('mediaDownload').hidden = !best || added || Boolean(resuming); $('mediaQuality').hidden = $('mediaDownload').hidden;
+  $('mediaOpenDownloads').hidden = !added || Boolean(resuming);
+  $('mediaResume').hidden = !resuming || !best; $('mediaResume').disabled = Boolean(resuming?.busy);
+  $('mediaResume').onclick = resuming && best ? () => runAction(() => continueWith(best)) : null;
+  $('cancelSource').hidden = !resuming; $('cancelSource').disabled = Boolean(resuming?.busy);
   $('mediaOthers').hidden = others.length === 0; $('mediaOthers').textContent = 'Другие варианты (' + others.length + ')';
   if (!others.length) $('mediaPanel').hidden = true;
 
@@ -306,10 +338,10 @@ function renderBrowser(force = false) {
     top.append(el('span', 'candidate-kind', KIND_LABELS[candidate.kind] || 'Видео'), el('span', 'candidate-host', mediaMeta(candidate) || candidate.host));
     const title = el('h3', 'candidate-title', candidate.title || 'Видео'); title.title = candidate.url || '';
     const notes = [candidate.ad ? 'похоже на рекламу' : '', candidate.short && !candidate.ad ? 'короткий ролик' : '', candidate.duplicate ? 'то же видео в другом качестве' : '', candidate.probeStatus === 'failed' ? 'не удалось проверить' : '', candidate.probeStatus === 'probing' ? 'проверяю…' : ''].filter(Boolean);
-    const done = ui.downloadedIds.has(candidate.id);
-    const download = el('button', 'candidate-download'); download.append(icon(done ? 'check' : 'download'), document.createTextNode(done ? 'Добавлено' : 'Скачать'));
-    download.disabled = done;
-    download.addEventListener('click', () => runAction(() => downloadFound(candidate, state.settings?.quality || 'best'), download));
+    const done = !resuming && ui.downloadedIds.has(candidate.id);
+    const download = el('button', 'candidate-download'); download.append(icon(done ? 'check' : 'download'), document.createTextNode(resuming ? 'Продолжить этим видео' : done ? 'Добавлено' : 'Скачать'));
+    download.disabled = done || Boolean(resuming?.busy);
+    download.addEventListener('click', () => runAction(() => resuming ? continueWith(candidate) : downloadFound(candidate, state.settings?.quality || 'best'), download));
     card.append(top, title); if (notes.length) card.append(el('p', 'candidate-note', notes.join(' · '))); card.append(download); return card;
   }));
 }
@@ -368,7 +400,22 @@ async function confirmDownload() {
   else request.quality = selection.startsWith('quality:') ? selection.slice(8) : 'best';
   await call('download', request); closeModal(); $('videoUrl').value = ''; navigate('downloads'); toast('Видео добавлено в очередь');
 }
-async function openBrowser(url) { closeModal(); navigate('browser'); $('browserUrl').value = url; renderBrowser(true); await call('openBrowser', url); ui.lastBounds = ''; await syncBrowserBounds(); }
+async function openBrowser(url, resumeJob = null) {
+  ui.resumeJob = resumeJob;
+  closeModal(); navigate('browser'); $('browserUrl').value = url; renderBrowser(true);
+  let result;
+  try { result = await call('openBrowser', url); } catch (error) {
+    if (ui.resumeJob === resumeJob) { ui.resumeJob = null; renderBrowser(); }
+    throw error;
+  }
+  if (resumeJob && ui.resumeJob === resumeJob) {
+    const { opened, browser, media, candidates } = result;
+    resumeJob.pageId = opened ? browser.pageId : -1;
+    if ((state.browser?.pageId ?? -1) < browser.pageId) state = { ...state, browser, media, candidates };
+    renderBrowser(true);
+  }
+  ui.lastBounds = ''; await syncBrowserBounds();
+}
 async function chooseFolder() { const result = await call('chooseFolder'); const directory = typeof result === 'string' ? result : result?.directory; if (directory) await saveSettings({ directory }); }
 
 function renderCaptureSources() {
@@ -473,6 +520,7 @@ function bindEvents() {
   $('mediaOthers').addEventListener('click', () => { $('mediaPanel').hidden = !$('mediaPanel').hidden; });
   $('closeOthers').addEventListener('click', () => { $('mediaPanel').hidden = true; });
   $('mediaDownload').addEventListener('click', () => { const best = (state.candidates || []).find(item => item.id === state.media?.best); if (best) runAction(() => downloadFound(best, $('mediaQuality').value), $('mediaDownload')); });
+  $('cancelSource').addEventListener('click', () => { ui.resumeJob = null; renderBrowser(); });
   $('mediaOpenDownloads').addEventListener('click', () => navigate('downloads'));
   $('chooseFolder').addEventListener('click', () => runAction(chooseFolder, $('chooseFolder')));
   $('changeFolderInline').addEventListener('click', () => runAction(chooseFolder, $('changeFolderInline')));
@@ -490,7 +538,9 @@ function bindEvents() {
   $('copyExtensionToken').addEventListener('click', () => runAction(async () => { if (state.extension?.token) { await navigator.clipboard.writeText(state.extension.token); toast('Код подключения скопирован'); } }));
   $('openExtensionFolder').addEventListener('click', () => runAction(() => call('openExtensionFolder')));
   $('checkUpdates').addEventListener('click', () => runAction(async () => { const result = await call('checkForUpdates'); if (result?.status === 'latest') toast('Установлена последняя версия'); }, $('checkUpdates')));
-  for (const id of ['installUpdate', 'footerUpdate']) $(id).addEventListener('click', () => runAction(() => call('installUpdate'), $(id)));
+  for (const id of ['installUpdate', 'footerUpdate']) $(id).addEventListener('click', () => runAction(async () => {
+    await call('installUpdate');
+  }, $(id)).finally(renderUpdate));
   document.addEventListener('keydown', event => {
     if (event.key === 'Escape' && ui.modal) closeModal();
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'l') { event.preventDefault(); if (ui.route === 'browser') $('browserUrl').focus(); else { navigate('downloads'); $('videoUrl').focus(); } }

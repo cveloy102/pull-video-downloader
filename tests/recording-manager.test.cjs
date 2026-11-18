@@ -31,6 +31,27 @@ test('empty captures fail instead of reporting a successful file', async () => {
   await fs.rm(root, { recursive: true, force: true });
 });
 
+test('a pending recording start reserves the slot and releases it on failure', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pull-recording-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const manager = new RecordingManager({ dataDir: root });
+  const blockedPath = path.join(root, 'file');
+  await fs.writeFile(blockedPath, '');
+  const failed = manager.start({ directory: blockedPath });
+  await assert.rejects(manager.start({ directory: root, name: 'blocked' }), /уже/);
+  await assert.rejects(failed);
+  assert.equal(manager.isActive(), false);
+
+  const starting = manager.start({ directory: root, name: 'first' });
+  await assert.rejects(manager.start({ directory: root, name: 'second' }), /уже/);
+  const disposed = manager.dispose();
+  await starting;
+  await disposed;
+  assert.equal(manager.isActive(), false);
+  const { id } = await manager.start({ directory: root, name: 'next' });
+  await assert.rejects(manager.finish(id), /Пустая/);
+});
+
 test('unrecognized recordings and oversized chunks cannot write arbitrary files', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pull-recording-'));
   const manager = new RecordingManager({ dataDir: root });

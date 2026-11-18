@@ -161,10 +161,9 @@ function registerIPC() {
     const candidate = await browser.resolveCandidate(input.id);
     return downloader.add({ ...candidate, named: true, quality: input.quality || settings.quality, audioOnly: Boolean(input.audioOnly) });
   });
-  // "Open source" flow: the same video found again on its page continues the old job.
   handle('reattachCandidate', async input => {
-    if (!input || typeof input.jobId !== 'string' || typeof input.candidateId !== 'string') throw new Error('Не выбрано видео.');
-    const candidate = await browser.resolveCandidate(input.candidateId);
+    if (!input || typeof input.jobId !== 'string' || typeof input.candidateId !== 'string' || !Number.isInteger(input.pageId)) throw new Error('Не выбрано видео.');
+    const candidate = await browser.resolveCandidate(input.candidateId, { pageId: input.pageId });
     return downloader.reattach(input.jobId, candidate);
   });
   handle('getCaptureSources', async () => {
@@ -266,7 +265,10 @@ app.whenReady().then(async () => {
     } catch { callback({}); }
   });
   registerIPC(); startExtensionBridge();
-  mainWindow.once('ready-to-show', () => { if (!startHidden) mainWindow.show(); });
+  mainWindow.once('ready-to-show', () => {
+    if (!startHidden) mainWindow.show();
+    updater.confirmStarted();
+  });
   mainWindow.on('close', event => {
     if (quitting || shuttingDown) return;
     if (settings.closeToTray) {
@@ -286,7 +288,9 @@ app.whenReady().then(async () => {
   });
   nativeTheme.on('updated', applyChrome);
   const updateLog = path.join(dataDir, 'update.log');
-  updater = createUpdater({ app, onChange: broadcast, beforeInstall: () => { quitting = true; }, log: (...parts) => {
+  updater = createUpdater({ app, dataDir, progressExecutable: path.join(resourcesDir, 'PULL-UpdateWindow.exe'), onChange: broadcast, beforeInstall: () => {
+    if (recordings.isActive()) throw new Error('Завершите запись перед обновлением PULL.');
+  }, log: (...parts) => {
     try { fs.appendFileSync(updateLog, `${new Date().toISOString()} ${parts.map(String).join(' ')}\n`); if (fs.statSync(updateLog).size > 512 * 1024) fs.writeFileSync(updateLog, ''); } catch { /* logging is best effort */ }
   } });
   applyLoginItem();

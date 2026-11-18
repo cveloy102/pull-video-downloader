@@ -312,8 +312,7 @@ class DownloadManager {
 
   // named: the title came from the page (browser/extension), so it names the file;
   // otherwise yt-dlp's own title and id are used as before.
-  // pageUrl / duration: where a browser stream was found and how long it is, so
-  // an expired stream can be found again on that page and matched to this job.
+  // pageUrl and duration help the user find the same video if its stream expires.
   add({ url: rawUrl, formatId, quality = 'best', audioOnly = false, title, extra = {}, thumbnail, named = false, pageUrl, duration } = {}) {
     if (this._disposed) throw new DownloadError('DISPOSED', 'Приложение завершает работу.');
     const url = validateUrl(rawUrl);
@@ -340,8 +339,9 @@ class DownloadManager {
     const job = this.jobs.find((item) => item.id === id);
     if (!job || job.status === 'completed') throw new DownloadError('NOT_FOUND', 'Загрузка не найдена.');
     if (this.processes.has(id)) throw new DownloadError('BUSY', 'Загрузка уже идёт.');
+    const url = validateUrl(rawUrl);
     this._cleanupCookie(job, { keepSource: true });
-    job.url = validateUrl(rawUrl);
+    job.url = url;
     job.extra = privateOptions(extra);
     if (!job.duration && Number.isFinite(duration) && duration > 0) job.duration = duration;
     job.needsSource = false; job.sessionRestored = false; job.error = null; job.errorCode = null;
@@ -463,7 +463,7 @@ class DownloadManager {
             const expired = failure.code === 'AUTH_REQUIRED' || /\b(403|404|410)\b|expired|Forbidden|Gone/i.test(record.stderr || '');
             if (job.pageUrl && (job.sessionRestored || expired)) {
               job.errorCode = 'SOURCE_EXPIRED';
-              job.error = 'Ссылка на видео устарела. Нажмите «Открыть источник» и включите видео, загрузка продолжится с того же места.';
+              job.error = 'Ссылка на видео устарела. Нажмите «Открыть источник», включите исходное видео и подтвердите найденный поток.';
             }
           }
         }
