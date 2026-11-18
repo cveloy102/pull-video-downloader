@@ -1,6 +1,6 @@
 {
   "name": "pull-video",
-  "version": "1.2.1-beta.3",
+  "version": "1.2.1",
   "description": "PULL — загрузка видео и поиск потоков в браузере",
   "main": "src/main.cjs",
   "author": "Cveloy",
