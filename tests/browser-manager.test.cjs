@@ -129,3 +129,36 @@ test('cookie jars left by a previous run are removed on start', async () => {
   await assert.rejects(fs.access(stale));
   await fs.rm(root, { recursive: true, force: true });
 });
+
+test('caught media is measured once and the main video is marked as best', async () => {
+  const calls = [];
+  const probe = async (url, headers) => { calls.push({ url, headers }); return url.includes('ad') ? { status: 'ready', duration: 12, height: 720 } : { status: 'ready', duration: 1800, height: 1080, variants: 3 }; };
+  const browser = new BrowserManager({ window: null, dataDir: null, probe });
+  browser.addExternalCandidate({ url: 'https://ads.example.net/ad.mp4', title: 'Ad', mimeType: 'video/mp4' });
+  browser.addExternalCandidate({ url: 'https://cdn.example.com/master.m3u8', title: 'Фильм', mimeType: 'application/vnd.apple.mpegurl', headers: { Cookie: 'sid=1', Referer: 'https://example.com/' } });
+  browser.addExternalCandidate({ url: 'https://cdn.example.com/master.m3u8', title: 'Фильм', mimeType: 'application/vnd.apple.mpegurl' });
+  assert.equal(browser.getState().media.probing, true);
+  await new Promise((resolve) => setImmediate(resolve));
+  const state = browser.getState();
+  assert.equal(calls.length, 2, 'repeat sightings are not measured again');
+  assert.equal(calls[1].headers.Cookie, 'sid=1');
+  assert.equal(state.media.confidence, 'high');
+  const best = state.candidates.find((item) => item.best);
+  assert.equal(best.kind, 'hls'); assert.equal(best.duration, 1800); assert.equal(best.height, 1080);
+  assert.equal(state.candidates.find((item) => item.ad).host, 'ads.example.net');
+  browser.clearPageCandidates();
+  assert.equal(browser.getState().candidates.length, 0);
+});
+
+test('a measurement that fails once is retried before the stream is given up', async () => {
+  let calls = 0;
+  const probe = async () => (++calls === 1 ? { status: 'failed' } : { status: 'ready', duration: 600, height: 720 });
+  const browser = new BrowserManager({ window: null, dataDir: null, probe });
+  browser.retryDelay = 5;
+  browser.addExternalCandidate({ url: 'https://cdn.example.com/slow.m3u8', title: 'Видео', mimeType: 'application/vnd.apple.mpegurl' });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const state = browser.getState();
+  assert.equal(calls, 2);
+  assert.equal(state.candidates[0].probeStatus, 'ready');
+  assert.ok(state.media.best, 'the stream is offered after the retry');
+});

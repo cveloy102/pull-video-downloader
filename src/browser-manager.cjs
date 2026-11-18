@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { rankCandidates } = require('./media-ranking.cjs');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
 const path = require('node:path');
@@ -93,10 +94,11 @@ function cookieJar(cookies, host) {
 }
 
 class BrowserManager {
-  constructor({ window, dataDir, onChange = () => {} }) {
+  constructor({ window, dataDir, onChange = () => {}, probe = null }) {
     this.window = window;
     this.dataDir = dataDir;
     this.onChange = onChange;
+    this.probe = probe;
     this.view = null;
     this.session = null;
     this.candidates = new Map();
@@ -117,10 +119,56 @@ class BrowserManager {
   }
 
   getState() {
+    const all = [...this.candidates.values()];
+    const ranking = rankCandidates(all, this.browser.title);
+    const flags = new Map(ranking.others.map((item) => [item.id, item]));
     return {
       browser: { ...this.browser },
-      candidates: [...this.candidates.values()].map(({ id, title, url, host, kind, mimeType, source }) => ({ id, title, url: displayUrl(url), host, kind, mimeType, source }))
+      media: { best: ranking.best, confidence: ranking.confidence, probing: ranking.probing },
+      candidates: all.map(({ id, title, url, host, kind, mimeType, source, probe }) => ({
+        id, title, url: displayUrl(url), host, kind, mimeType, source,
+        probeStatus: probe?.status || 'probing', duration: probe?.duration ?? null, height: probe?.height || 0, variants: probe?.variants || 0,
+        best: id === ranking.best, ad: Boolean(flags.get(id)?.ad), short: Boolean(flags.get(id)?.short), duplicate: Boolean(flags.get(id)?.duplicate)
+      }))
     };
+  }
+
+  // Headers and cookies the page itself used, so FFprobe sees what the player saw.
+  async _requestHeaders(candidate) {
+    const headers = replayHeaders(candidate.headers);
+    const pairs = new Map();
+    if (candidate.source === 'browser' && this.session) {
+      for (const cookie of await this.session.cookies.get({})) if (cookieMatchesHost(cookie, candidate.host)) pairs.set(cookie.name, cookie.value);
+    }
+    for (const pair of getHeader(candidate.headers, 'cookie').split(';')) {
+      const equals = pair.indexOf('=');
+      if (equals > 0 && !pairs.has(pair.slice(0, equals).trim())) pairs.set(pair.slice(0, equals).trim(), pair.slice(equals + 1).trim());
+    }
+    const cookie = [...pairs].map(([name, value]) => `${name}=${value}`).join('; ');
+    if (cookie && !/[\r\n\0]/.test(cookie)) headers.Cookie = cookie;
+    return headers;
+  }
+
+  async _measure(candidate, attempt = 1) {
+    if (!this.probe) { candidate.probe = { status: 'failed' }; return; }
+    let result;
+    try { result = await this.probe(candidate.url, await this._requestHeaders(candidate)); } catch { result = { status: 'failed' }; }
+    // The page may have been left (and the list cleared) while FFprobe ran.
+    if (this.disposed || this.candidates.get(candidate.id) !== candidate) return;
+    // A slow site or a busy computer can make one measurement time out; try once more
+    // before deciding the stream is unreadable (it would never be offered otherwise).
+    if ((!result || result.status !== 'ready') && attempt < 2) {
+      setTimeout(() => { void this._measure(candidate, attempt + 1); }, this.retryDelay ?? 2000);
+      return;
+    }
+    candidate.probe = result || { status: 'failed' };
+    this._emit();
+  }
+
+  clearPageCandidates() {
+    if (!this.candidates.size) return;
+    this.candidates.clear();
+    this._emit();
   }
 
   _emit() {
@@ -168,6 +216,8 @@ class BrowserManager {
     this.session.on('will-download', this.downloadHandler);
     this._guardContents(wc);
     for (const event of ['did-start-loading', 'did-stop-loading', 'did-navigate', 'did-navigate-in-page', 'page-title-updated']) wc.on(event, () => this._updateBrowser());
+    // "Found" always means "on this page": a new page starts with an empty list.
+    wc.on('did-start-navigation', (event, _url, isInPlace, isMainFrame) => { if ((event.isMainFrame ?? isMainFrame) && !(event.isSameDocument ?? isInPlace)) this.clearPageCandidates(); });
     wc.on('did-fail-load', (_event, code, description, _url, isMainFrame) => {
       if (isMainFrame && code !== -3) { this.browser.error = `Не удалось открыть страницу (${description}).`; this._updateBrowser(); }
     });
@@ -295,9 +345,19 @@ class BrowserManager {
     const previous = this.candidates.get(id);
     const headers = { ...(previous?.headers || {}), ...(input.headers || {}) };
     if (input.referrer && !getHeader(headers, 'referer')) headers.Referer = input.referrer;
-    const candidate = { id, url, host: new URL(url).hostname, title: String(input.title || this.browser.title || new URL(url).pathname.split('/').pop() || 'Видеопоток').slice(0, 300), ...detected, headers, source: input.source || 'browser' };
-    if (!previous && this.candidates.size >= MAX_CANDIDATES) this.candidates.delete(this.candidates.keys().next().value);
+    const candidate = { id, url, host: new URL(url).hostname, title: String(input.title || this.browser.title || new URL(url).pathname.split('/').pop() || 'Видеопоток').slice(0, 300), ...detected, headers, source: input.source || 'browser',
+      // The page the video was playing on: used to find an expired stream again.
+      pageUrl: input.pageUrl || (input.source === 'extension' ? getHeader(headers, 'referer') : this.browser.url) || '' };
+    if (previous) {
+      // A repeat sighting refreshes headers in place and keeps its measurement.
+      Object.assign(previous, { headers: candidate.headers, title: candidate.title, source: candidate.source });
+      this._emit();
+      return id;
+    }
+    if (this.candidates.size >= MAX_CANDIDATES) this.candidates.delete(this.candidates.keys().next().value);
+    candidate.probe = { status: 'probing' };
     this.candidates.set(id, candidate);
+    void this._measure(candidate);
     this._emit();
     return id;
   }
@@ -339,7 +399,7 @@ class BrowserManager {
       await fs.writeFile(cookieFile, cookieJar(cookies, host), { mode: 0o600, flag: 'wx' });
       this.cookieFiles.add(cookieFile);
     }
-    return { url: candidate.url, title: candidate.title, extra: { headers, ...(cookieFile ? { cookieFile } : {}) } };
+    return { url: candidate.url, title: candidate.title, pageUrl: candidate.pageUrl || undefined, duration: candidate.probe?.duration ?? undefined, extra: { headers, ...(cookieFile ? { cookieFile } : {}) } };
   }
 
   dispose() {

@@ -198,3 +198,80 @@ test('history keeps ordinary query parameters so jobs stay resumable', async () 
     assert.ok(!signed.url.includes('s3cret'));
   } finally { f.cleanup(); }
 });
+
+test('downloads named from the page get a clean, unique file name', async () => {
+  const f = fixture({ concurrency: 3 });
+  try {
+    fs.writeFileSync(path.join(f.downloadDir, 'Интерстеллар разбор науки.mp4'), 'old');
+    const a = f.manager.add({ url: 'https://cdn.example.com/master.m3u8', title: 'Интерстеллар: разбор науки', named: true });
+    const b = f.manager.add({ url: 'https://cdn.example.com/other/master.m3u8', title: 'Интерстеллар: разбор науки', named: true });
+    f.manager.add({ url: 'https://example.com/watch?v=1' });
+    await tick();
+    const output = (child) => child.args[child.args.indexOf('--output') + 1];
+    assert.equal(output(f.children[0]), 'Интерстеллар разбор науки (2).%(ext)s');
+    assert.equal(output(f.children[1]), 'Интерстеллар разбор науки (3).%(ext)s');
+    assert.equal(output(f.children[2]), '%(title).120B [%(id)s] [%(format_id)s].%(ext)s', 'links keep yt-dlp naming');
+    f.children[0].stdout.write('__PULL_TITLE__"master"\n');
+    assert.equal(f.manager.getState().find((job) => job.id === a.id).title, 'Интерстеллар: разбор науки', 'stream title "master" does not replace the page title');
+    f.manager.pause(b.id); f.children[1].emit('close', null); f.manager.resume(b.id); await tick();
+    assert.equal(output(f.children.at(-1)), 'Интерстеллар разбор науки (3).%(ext)s', 'resume keeps the same name');
+  } finally { f.cleanup(); }
+});
+
+// Stand-in for Electron safeStorage: reversible, but never plain text.
+const fakeSecrets = (available = true) => ({
+  available: () => available,
+  encrypt: (text) => 'enc:' + Buffer.from(text).toString('base64').split('').reverse().join(''),
+  decrypt: (blob) => Buffer.from(blob.slice(4).split('').reverse().join(''), 'base64').toString()
+});
+
+test('stream sessions survive a restart encrypted and resume with the same link, headers and cookies', async () => {
+  const f = fixture({ secrets: fakeSecrets() });
+  try {
+    const cookieFile = path.join(f.dataDir, 'capture-cookies', 'jar.txt');
+    fs.mkdirSync(path.dirname(cookieFile), { recursive: true }); fs.writeFileSync(cookieFile, '# Netscape\ncdn.example.com\tFALSE\t/\tTRUE\t0\tsid\tcookie_secret\n');
+    const job = f.manager.add({ url: 'https://cdn.example.com/master.m3u8?token=url_secret', title: 'Фильм', named: true, pageUrl: 'https://example.com/watch/42', duration: 1800,
+      extra: { headers: { Authorization: 'Bearer header_secret', Referer: 'https://example.com/watch/42' }, cookieFile } });
+    await tick(); f.manager.pause(job.id); f.children[0].emit('close', null);
+    const history = fs.readFileSync(path.join(f.dataDir, 'downloads.json'), 'utf8');
+    for (const secret of ['url_secret', 'header_secret', 'cookie_secret']) assert.ok(!history.includes(secret), `${secret} is not stored in plain text`);
+    assert.match(history, /"secret": "enc:/);
+
+    // Restart: a new manager reads the same history.
+    const restarted = new DownloadManager({ toolsDir: path.join(f.root, 'tools'), dataDir: f.dataDir, downloadDir: f.downloadDir, spawnProcess: (exe, args, options) => { const child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = null; child.args = args; child.kill = () => {}; f.children.push(child); return child; }, secrets: fakeSecrets() });
+    const restored = restarted.getState()[0];
+    assert.equal(restored.status, 'paused'); assert.equal(restored.needsSource, false); assert.equal(restored.error, null);
+    assert.equal(restored.pageUrl, 'https://example.com/watch/42');
+    assert.equal(restarted.resume(job.id), true); await tick();
+    const args = f.children.at(-1).args;
+    assert.equal(args.at(-1), 'https://cdn.example.com/master.m3u8?token=url_secret', 'full signed link is used again');
+    assert.ok(args.includes('Authorization:Bearer header_secret'));
+    const jar = args[args.indexOf('--cookies') + 1];
+    assert.match(fs.readFileSync(jar, 'utf8'), /cookie_secret/);
+    assert.equal(args[args.indexOf('--output') + 1], 'Фильм.%(ext)s', 'same file name after restart');
+
+    // The restored link has expired: the error points to the page.
+    f.children.at(-1).stderr.write('ERROR: HTTP Error 403: Forbidden\n'); f.children.at(-1).emit('close', 1);
+    const failed = restarted.getState()[0];
+    assert.equal(failed.errorCode, 'SOURCE_EXPIRED'); assert.match(failed.error, /Открыть источник/);
+
+    // A fresh stream from the page continues the same job.
+    const continued = restarted.reattach(job.id, { url: 'https://cdn2.example.com/master.m3u8?token=new', extra: { headers: { Referer: 'https://example.com/watch/42' } } });
+    assert.equal(continued.needsSource, false); await tick();
+    assert.equal(f.children.at(-1).args.at(-1), 'https://cdn2.example.com/master.m3u8?token=new');
+    assert.equal(f.children.at(-1).args[f.children.at(-1).args.indexOf('--output') + 1], 'Фильм.%(ext)s');
+    restarted.dispose();
+  } finally { f.cleanup(); }
+});
+
+test('without the key store a restarted stream asks for its page', async () => {
+  const f = fixture({ secrets: fakeSecrets() });
+  try {
+    const job = f.manager.add({ url: 'https://cdn.example.com/v.m3u8?token=x', title: 'Фильм', named: true, pageUrl: 'https://example.com/p', extra: { headers: { Referer: 'https://example.com/p' } } });
+    await tick(); f.manager.pause(job.id); f.children[0].emit('close', null);
+    const restarted = new DownloadManager({ toolsDir: path.join(f.root, 'tools'), dataDir: f.dataDir, downloadDir: f.downloadDir, spawnProcess: () => { throw new Error('must not start'); }, secrets: fakeSecrets(false) });
+    assert.equal(restarted.getState()[0].needsSource, true);
+    assert.throws(() => restarted.resume(job.id), { code: 'SOURCE_EXPIRED' });
+    restarted.dispose();
+  } finally { f.cleanup(); }
+});

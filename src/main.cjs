@@ -10,6 +10,8 @@ const { DownloadManager } = require('./download-manager.cjs');
 const { BrowserManager } = require('./browser-manager.cjs');
 const { RecordingManager } = require('./recording-manager.cjs');
 const { createTray } = require('./tray.cjs');
+const { createProber } = require('./media-probe.cjs');
+const { createUpdater } = require('./updater.cjs');
 
 if (process.env.PULL_DATA_DIR) app.setPath('userData', path.resolve(process.env.PULL_DATA_DIR));
 const appRoot = path.resolve(__dirname, '..');
@@ -24,7 +26,7 @@ let shuttingDown = false;
 let quitting = false;
 let extensionAvailable = false;
 let extensionError = '';
-let settings, tray;
+let settings, tray, prober, updater;
 const startHidden = process.argv.includes('--hidden');
 // One pixel shorter than the 36px title bar so its bottom border runs under the caption buttons.
 const TITLEBAR_HEIGHT = 35;
@@ -80,7 +82,8 @@ function snapshot() {
   const tools = downloader?.getTools() || {};
   return {
     version: app.getVersion(),
-    settings: { theme: settings.theme, directory: settings.directory, quality: settings.quality, concurrency: settings.concurrency, closeToTray: settings.closeToTray, launchAtLogin: settings.launchAtLogin },
+    settings: { theme: settings.theme, directory: settings.directory, quality: settings.quality, concurrency: settings.concurrency, closeToTray: settings.closeToTray, launchAtLogin: settings.launchAtLogin, autoDownloadFound: settings.autoDownloadFound },
+    update: updater?.getState() || { status: 'idle' },
     jobs: downloader?.getState() || [],
     ...(browser?.getState() || { candidates: [], browser: {} }),
     recordings: recordings?.getState() || [],
@@ -113,7 +116,12 @@ async function openLocal(file) { const error = await shell.openPath(file); if (e
 
 function registerIPC() {
   handle('getState', snapshot);
-  handle('analyze', url => downloader.analyze(url));
+  // Failures come back as data (code + message) so the UI can decide to open
+  // the page in the built-in browser instead of showing an error.
+  handle('analyze', async url => {
+    try { return await downloader.analyze(url); }
+    catch (error) { return { failed: true, code: error.code || 'DOWNLOAD_FAILED', message: error.message || 'Не удалось прочитать ссылку.' }; }
+  });
   handle('download', input => {
     if (!input || typeof input !== 'object') throw new Error('Не указана ссылка.');
     return downloader.add({ url: input.url, formatId: input.formatId, quality: input.quality || settings.quality, audioOnly: Boolean(input.audioOnly), title: input.title });
@@ -135,6 +143,7 @@ function registerIPC() {
     if (!patch || typeof patch !== 'object') throw new Error('Некорректные настройки.');
     if (['dark', 'light', 'system'].includes(patch.theme)) { settings.theme = patch.theme; applyChrome(); }
     if (typeof patch.closeToTray === 'boolean') settings.closeToTray = patch.closeToTray;
+    if (typeof patch.autoDownloadFound === 'boolean') settings.autoDownloadFound = patch.autoDownloadFound;
     if (typeof patch.launchAtLogin === 'boolean') { settings.launchAtLogin = patch.launchAtLogin; applyLoginItem(); }
     if (['best', '4320', '2160', '1440', '1080', '720', '480'].includes(String(patch.quality))) settings.quality = String(patch.quality);
     if (patch.concurrency !== undefined) { settings.concurrency = Math.max(1, Math.min(5, Math.round(Number(patch.concurrency) || 2))); downloader.setConcurrency(settings.concurrency); }
@@ -150,7 +159,13 @@ function registerIPC() {
   handle('downloadCandidate', async input => {
     if (!input || typeof input.id !== 'string') throw new Error('Не выбрано видео.');
     const candidate = await browser.resolveCandidate(input.id);
-    return downloader.add({ ...candidate, quality: input.quality || settings.quality, audioOnly: Boolean(input.audioOnly) });
+    return downloader.add({ ...candidate, named: true, quality: input.quality || settings.quality, audioOnly: Boolean(input.audioOnly) });
+  });
+  // "Open source" flow: the same video found again on its page continues the old job.
+  handle('reattachCandidate', async input => {
+    if (!input || typeof input.jobId !== 'string' || typeof input.candidateId !== 'string') throw new Error('Не выбрано видео.');
+    const candidate = await browser.resolveCandidate(input.candidateId);
+    return downloader.reattach(input.jobId, candidate);
   });
   handle('getCaptureSources', async () => {
     const sources = await desktopCapturer.getSources({ types: ['window', 'screen'], thumbnailSize: { width: 280, height: 158 }, fetchWindowIcons: false });
@@ -167,6 +182,8 @@ function registerIPC() {
   handle('openRecording', id => openLocal(recordings.getFile(id)));
   handle('showRecording', id => { shell.showItemInFolder(recordings.getFile(id)); });
   handle('openExtensionFolder', () => openLocal(extensionPath));
+  handle('checkForUpdates', () => updater.check());
+  handle('installUpdate', () => updater.install());
   handle('confirmClose', async () => {
     if (recordings.isActive()) await recordings.dispose();
     mainWindow.close();
@@ -211,6 +228,7 @@ app.whenReady().then(async () => {
   settings = {
     theme: ['dark','light','system'].includes(saved.theme) ? saved.theme : 'light',
     closeToTray: typeof saved.closeToTray === 'boolean' ? saved.closeToTray : true,
+    autoDownloadFound: saved.autoDownloadFound === true,
     launchAtLogin: saved.launchAtLogin === true,
     trayHintShown: saved.trayHintShown === true,
     directory: typeof saved.directory === 'string' && path.isAbsolute(saved.directory) ? saved.directory : path.join(app.getPath('videos'), 'PULL'),
@@ -219,7 +237,9 @@ app.whenReady().then(async () => {
     extensionToken: typeof saved.extensionToken === 'string' && /^[a-f0-9]{48}$/.test(saved.extensionToken) ? saved.extensionToken : crypto.randomBytes(24).toString('hex')
   };
   persistSettings();
-  downloader = new DownloadManager({ toolsDir, dataDir, downloadDir: settings.directory, concurrency: settings.concurrency, onChange: broadcast });
+  // Stream sessions are sealed with Windows DPAPI via safeStorage, readable only by this Windows user.
+  const secrets = { available: () => electron.safeStorage.isEncryptionAvailable(), encrypt: text => electron.safeStorage.encryptString(text).toString('base64'), decrypt: blob => electron.safeStorage.decryptString(Buffer.from(blob, 'base64')) };
+  downloader = new DownloadManager({ toolsDir, dataDir, downloadDir: settings.directory, concurrency: settings.concurrency, onChange: broadcast, secrets });
   recordings = new RecordingManager({ dataDir, onChange: broadcast, getFfmpeg: () => downloader.getTools().ffmpeg });
   const dark = isDark();
   mainWindow = new BrowserWindow({ width: 1280, height: 850, minWidth: 940, minHeight: 660, title: 'PULL', icon: path.join(__dirname, 'assets', 'pull.ico'), backgroundColor: windowBackground(), show: false,
@@ -228,7 +248,8 @@ app.whenReady().then(async () => {
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true, spellcheck: false }
   });
   Menu.setApplicationMenu(null);
-  browser = new BrowserManager({ window: mainWindow, dataDir, onChange: broadcast });
+  prober = createProber({ getFfprobe: () => downloader.getTools().ffprobe });
+  browser = new BrowserManager({ window: mainWindow, dataDir, onChange: broadcast, probe: (url, headers) => prober.probe(url, headers) });
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   mainWindow.webContents.on('will-navigate', event => event.preventDefault());
   const uiSession = mainWindow.webContents.session;
@@ -264,6 +285,10 @@ app.whenReady().then(async () => {
     }
   });
   nativeTheme.on('updated', applyChrome);
+  const updateLog = path.join(dataDir, 'update.log');
+  updater = createUpdater({ app, onChange: broadcast, beforeInstall: () => { quitting = true; }, log: (...parts) => {
+    try { fs.appendFileSync(updateLog, `${new Date().toISOString()} ${parts.map(String).join(' ')}\n`); if (fs.statSync(updateLog).size > 512 * 1024) fs.writeFileSync(updateLog, ''); } catch { /* logging is best effort */ }
+  } });
   applyLoginItem();
   tray = createTray({ electron, iconDir: path.join(__dirname, 'assets'), getJobs: () => downloader.getState(), actions: {
     show: showWindow,
@@ -285,6 +310,6 @@ app.on('before-quit', event => {
   if (shuttingDown) return;
   event.preventDefault(); shuttingDown = true; quitting = true;
   clearTimeout(broadcastTimer);
-  server?.close(); browser?.dispose(); tray?.destroy();
+  server?.close(); updater?.dispose(); prober?.dispose(); browser?.dispose(); tray?.destroy();
   Promise.allSettled([Promise.resolve(downloader?.dispose()), Promise.resolve(recordings?.dispose())]).then(() => app.quit());
 });

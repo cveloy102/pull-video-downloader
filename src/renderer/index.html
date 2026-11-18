@@ -49,19 +49,29 @@
       </section>
 
       <section class="page browser-page" id="page-browser" aria-labelledby="browserTitle">
-        <header class="page-top"><h1 id="browserTitle">Браузер</h1><p class="page-meta">Открой сайт и включи видео, потоки появятся справа</p></header>
+        <header class="page-top"><h1 id="browserTitle">Браузер</h1><p class="page-meta">Для сайтов, где видео не находится по ссылке</p></header>
         <form class="command command-compact" id="browserForm">
           <div class="browser-navigation"><button type="button" class="icon-button" id="browserBack" title="Назад" aria-label="Назад"><span data-icon="arrow-left"></span></button><button type="button" class="icon-button" id="browserForward" title="Вперёд" aria-label="Вперёд"><span data-icon="arrow-right"></span></button><button type="button" class="icon-button" id="browserReload" title="Обновить" aria-label="Обновить"><span data-icon="refresh"></span></button></div>
           <input id="browserUrl" type="text" placeholder="https://example.com/video" spellcheck="false" autocomplete="off" required aria-label="Адрес страницы">
           <button class="button button-primary" type="submit">Открыть<kbd class="kbd-on-dark">↵</kbd></button>
         </form>
+        <div class="media-bar" id="mediaBar" data-state="hint" aria-live="polite">
+          <span class="media-bar-icon" id="mediaBarIcon" data-icon="play"></span>
+          <div class="media-bar-text"><strong id="mediaBarTitle">Включите видео на странице</strong><span id="mediaBarMeta">PULL найдёт его сам и предложит скачать</span></div>
+          <div class="media-bar-actions">
+            <button id="mediaOthers" class="text-button" type="button" hidden>Другие варианты</button>
+            <select id="mediaQuality" class="select-control" aria-label="Качество" hidden><option value="best">Лучшее качество</option><option value="1080">До 1080p</option><option value="720">До 720p</option><option value="480">До 480p</option><option value="audio">Только звук</option></select>
+            <button id="mediaDownload" class="button button-primary" type="button" hidden><span data-icon="download"></span>Скачать</button>
+            <button id="mediaOpenDownloads" class="button button-secondary" type="button" hidden>Открыть загрузки</button>
+          </div>
+          <div class="media-bar-progress" id="mediaProbing" hidden><i></i></div>
+        </div>
         <div class="browser-workspace">
-          <div id="browserSlot" class="browser-slot"><div class="browser-welcome"><h2>Открой страницу с видео</h2><p>Нажми Play, PULL поймает поток.</p><span class="mono faint">HLS · DASH · MP4 · WEBM</span></div></div>
-          <aside class="media-panel">
-            <div class="media-panel-heading"><h2>Найдено <span id="mediaCount" class="count">0</span></h2><button id="clearCandidates" class="icon-button" title="Очистить список" aria-label="Очистить найденные потоки"><span data-icon="trash"></span></button></div>
+          <div id="browserSlot" class="browser-slot"><div class="browser-welcome"><h2>Откройте страницу с видео</h2><p>Нажмите Play, PULL сам найдёт видео и предложит его скачать.</p></div></div>
+          <aside class="media-panel" id="mediaPanel" hidden>
+            <div class="media-panel-heading"><h2>Другие варианты</h2><div><button id="clearCandidates" class="icon-button" title="Очистить список" aria-label="Очистить найденное"><span data-icon="trash"></span></button><button id="closeOthers" class="icon-button" title="Скрыть" aria-label="Скрыть другие варианты"><span data-icon="close"></span></button></div></div>
             <div id="candidateList" class="candidate-list"></div>
-            <div class="media-empty" id="mediaEmpty"><p>Пока пусто. Запусти воспроизведение. Если сначала идёт реклама, выбери нужный поток.</p></div>
-            <p class="media-footnote">Доступность зависит от сайта. Потоки с DRM не скачиваются.</p>
+            <p class="media-footnote">Реклама и короткие ролики помечены. Видео с защитой DRM не скачиваются.</p>
           </aside>
         </div>
       </section>
@@ -95,6 +105,7 @@
         <div class="settings-group"><h2>Загрузки</h2>
           <div class="setting-row"><div><h3>Папка сохранения</h3><p class="mono" id="settingsDirectory">Папка загрузок</p></div><button id="chooseFolder" class="button button-secondary"><span data-icon="folder"></span>Выбрать</button></div>
           <div class="setting-row"><div><h3>Качество по умолчанию</h3><p>Лучший формат в пределах ограничения</p></div><select id="defaultQuality" class="select-control"><option value="best">Лучшее</option><option value="2160">До 4K</option><option value="1440">До 1440p</option><option value="1080">До 1080p</option><option value="720">До 720p</option><option value="480">До 480p</option></select></div>
+          <div class="setting-row"><div><h3>Скачивать найденное видео сразу</h3><p>Во встроенном браузере: как только PULL уверен, что нашёл главное видео, загрузка начнётся сама</p></div><label class="switch"><input type="checkbox" id="autoDownloadFound"><span></span></label></div>
           <div class="setting-row"><div><h3>Одновременные загрузки</h3><p>Сколько видео скачивается параллельно</p></div><select id="concurrency" class="select-control"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option></select></div>
         </div>
         <div class="settings-group"><h2>Фоновая работа</h2>
@@ -103,6 +114,9 @@
         </div>
         <div class="settings-group"><h2>Внешний вид</h2>
           <div class="setting-row"><div><h3>Тема</h3><p>«Как в системе» следует настройке Windows</p></div><div class="segmented"><button id="themeSystem" data-theme="system">Как в системе</button><button id="themeLight" data-theme="light">Светлая</button><button id="themeDark" data-theme="dark">Тёмная</button></div></div>
+        </div>
+        <div class="settings-group"><h2>Обновления</h2>
+          <div class="setting-row"><div><h3>PULL <span class="mono" id="appVersion"></span></h3><p id="updateStatus">Проверка обновлений…</p></div><div class="pairing"><button id="checkUpdates" class="button button-secondary"><span data-icon="refresh"></span>Проверить</button><button id="installUpdate" class="button button-primary" hidden>Перезапустить и обновить</button></div></div>
         </div>
         <div class="settings-group"><h2>Движок</h2>
           <div class="setting-row"><div><h3>yt-dlp</h3><p>Извлечение видео со страниц</p></div><span class="mono faint" id="ytDlpStatus">Проверка…</span></div>
@@ -114,7 +128,7 @@
           <p class="footnote">Открой страницу расширений, включи режим разработчика и нажми «Загрузить распакованное». Выбери папку расширения PULL и вставь в его настройках код подключения.</p>
         </div>
       </section>
-      <footer class="app-footer"><span class="engine-status"><span class="status-light" id="engineLight"></span><span id="engineLabel">Подключение</span><span class="faint" id="engineDetail">Подготовка приложения</span></span><span class="signature">by Cveloy</span></footer>
+      <footer class="app-footer"><span class="engine-status"><span class="status-light" id="engineLight"></span><span id="engineLabel">Подключение</span><span class="faint" id="engineDetail">Подготовка приложения</span></span><span class="footer-right"><button class="update-pill" id="footerUpdate" type="button" hidden></button><span class="signature">by Cveloy</span></span></footer>
     </main>
   </div>
 

@@ -1,5 +1,5 @@
 const { contextBridge, ipcRenderer } = require('electron');
-const methods = ['getState','analyze','download','pauseDownload','resumeDownload','cancelDownload','removeDownload','openFile','showFile','chooseFolder','updateSettings','openBrowser','navigateBrowser','browserBack','browserForward','browserReload','setBrowserBounds','clearCandidates','downloadCandidate','getCaptureSources','selectCaptureSource','startRecording','appendRecording','finishRecording','openRecording','showRecording','openExtensionFolder','confirmClose'];
+const methods = ['checkForUpdates','installUpdate','getState','analyze','download','pauseDownload','resumeDownload','cancelDownload','removeDownload','openFile','showFile','chooseFolder','updateSettings','openBrowser','navigateBrowser','browserBack','browserForward','browserReload','setBrowserBounds','clearCandidates','downloadCandidate','reattachCandidate','getCaptureSources','selectCaptureSource','startRecording','appendRecording','finishRecording','openRecording','showRecording','openExtensionFolder','confirmClose'];
 const api = Object.fromEntries(methods.map(name => [name, (...args) => ipcRenderer.invoke('pull:' + name, ...args)]));
 api.onState = callback => {
   if (typeof callback !== 'function') throw new TypeError('callback required');

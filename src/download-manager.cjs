@@ -63,6 +63,14 @@ function privateOptions(extra = {}) {
   return result;
 }
 
+// Windows-safe file name from a page title: no reserved characters or names,
+// no trailing dots or spaces, at most 120 characters.
+function safeFileName(title) {
+  let name = String(title || '').replace(/[<>:"/\\|?*\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120).replace(/[. ]+$/, '');
+  if (/^(con|prn|aux|nul|com\d|lpt\d)$/i.test(name)) name = '_' + name;
+  return name;
+}
+
 function describeError(message, code = 'DOWNLOAD_FAILED') {
   const safe = redact(message);
   if (/DRM|Widevine|FairPlay|PlayReady/i.test(safe)) return { code: 'DRM', message: 'Поток защищён DRM. Этот тип защиты не поддерживается.' };
@@ -99,7 +107,11 @@ function formatSelection(job, formats = []) {
 }
 
 class DownloadManager {
-  constructor({ toolsDir, dataDir, downloadDir, concurrency = 2, onChange = () => {}, spawnProcess = spawn, analysisTimeout = 90000 } = {}) {
+  // secrets: optional { available(), encrypt(text), decrypt(blob) } backed by the
+  // OS key store (Electron safeStorage / Windows DPAPI). With it, session data a
+  // stream needs (signed URL, headers, cookies) survives a restart, encrypted.
+  constructor({ toolsDir, dataDir, downloadDir, concurrency = 2, onChange = () => {}, spawnProcess = spawn, analysisTimeout = 90000, secrets = null } = {}) {
+    this.secrets = secrets;
     this.toolsDir = toolsDir;
     this.dataDir = path.resolve(dataDir || path.join(os.tmpdir(), 'pull-data'));
     this.downloadDir = path.resolve(downloadDir || path.join(os.homedir(), 'Downloads', 'PULL'));
@@ -142,7 +154,43 @@ class DownloadManager {
       speed: job.speed || 0, eta: job.eta ?? null, filename: job.filename || null, error: job.error || null, errorCode: job.errorCode || null,
       thumbnail: job.thumbnail ? publicUrl(job.thumbnail) : null, quality: job.quality, audioOnly: Boolean(job.audioOnly), createdAt: job.createdAt,
       completedAt: job.completedAt || null, downloadedBytes: job.downloadedBytes || 0, totalBytes: job.totalBytes || 0,
-      directory: job.directory, needsSource: Boolean(job.needsSource) }));
+      directory: job.directory, needsSource: Boolean(job.needsSource), requiresSession: Boolean(job.requiresSession || job.secret || job.extra?.cookieFile),
+      pageUrl: job.pageUrl || null, duration: job.duration || null }));
+  }
+
+  _secretsReady() {
+    try { return Boolean(this.secrets?.available()); } catch { return false; }
+  }
+
+  // Encrypts what is needed to continue this stream later. Called when the
+  // session changes (add, reattach), not on every progress tick.
+  _sealSession(job) {
+    delete job.secret;
+    const headers = job.extra?.headers || {};
+    const hasSession = job.extra?.cookieFile || Object.keys(headers).length || hasSensitiveQuery(job.url);
+    if (!hasSession || !this._secretsReady()) return;
+    let cookies = '';
+    try { if (job.extra?.cookieFile) cookies = fs.readFileSync(job.extra.cookieFile, 'utf8'); } catch { /* file already gone */ }
+    try { job.secret = this.secrets.encrypt(JSON.stringify({ url: job.url, headers, cookies })); } catch { /* key store unavailable */ }
+  }
+
+  // Restores the session of a job loaded from history. Returns false when it
+  // cannot be decrypted (other Windows user, key store reset).
+  _openSession(job) {
+    if (!job.secret || job.extra?.headers && Object.keys(job.extra.headers).length || job.extra?.cookieFile) return true;
+    let data;
+    try { data = JSON.parse(this.secrets.decrypt(job.secret)); } catch { return false; }
+    job.url = validateUrl(data.url);
+    job.extra = privateOptions({ headers: data.headers || {} });
+    if (data.cookies) {
+      const directory = path.join(this.dataDir, 'capture-cookies');
+      fs.mkdirSync(directory, { recursive: true });
+      const file = path.join(directory, `${crypto.randomUUID()}.txt`);
+      fs.writeFileSync(file, data.cookies, { mode: 0o600 });
+      job.extra.cookieFile = file;
+    }
+    job.sessionRestored = true;
+    return true;
   }
 
   _load() {
@@ -152,9 +200,17 @@ class DownloadManager {
         const restored = { ...job, extra: {}, progress: Number(job.progress) || 0 };
         if (ACTIVE.has(job.status) || job.status === 'queued') restored.status = 'paused';
         if (job.requiresSession && !['completed', 'cancelled'].includes(restored.status)) {
-          restored.needsSource = true;
           restored.status = 'paused';
-          restored.error = 'Для продолжения откройте источник повторно: сессия браузера не хранится в истории.';
+          if (job.secret && this._secretsReady()) {
+            // The encrypted session is opened when the user presses "continue".
+            restored.needsSource = false; restored.error = null;
+          } else {
+            restored.needsSource = true;
+            // Jobs from versions before 1.2 did not remember their page.
+            restored.error = job.pageUrl
+              ? 'Чтобы продолжить, откройте источник: PULL откроет страницу, включите видео, и загрузка продолжится.'
+              : 'Эту загрузку нельзя продолжить: в старой версии PULL не запоминал страницу видео. Откройте страницу во встроенном браузере и скачайте видео заново.';
+          }
         }
         return restored;
       });
@@ -171,6 +227,9 @@ class DownloadManager {
         // so the job stays resumable; signed or tokenized URLs are stripped.
         safe.requiresSession = Boolean(job.requiresSession || extra?.cookieFile || Object.keys(extra?.headers || {}).length || hasSensitiveQuery(job.url));
         safe.url = safe.requiresSession ? publicUrl(job.url) : job.url;
+        // Only the encrypted blob (job.secret) carries the session; runtime flags stay in memory.
+        delete safe.sessionRestored;
+        if (safe.pageUrl && hasSensitiveQuery(safe.pageUrl)) safe.pageUrl = publicUrl(safe.pageUrl);
         if (safe.thumbnail) safe.thumbnail = publicUrl(safe.thumbnail);
         return safe;
       });
@@ -251,20 +310,45 @@ class DownloadManager {
     });
   }
 
-  add({ url: rawUrl, formatId, quality = 'best', audioOnly = false, title, extra = {}, thumbnail } = {}) {
+  // named: the title came from the page (browser/extension), so it names the file;
+  // otherwise yt-dlp's own title and id are used as before.
+  // pageUrl / duration: where a browser stream was found and how long it is, so
+  // an expired stream can be found again on that page and matched to this job.
+  add({ url: rawUrl, formatId, quality = 'best', audioOnly = false, title, extra = {}, thumbnail, named = false, pageUrl, duration } = {}) {
     if (this._disposed) throw new DownloadError('DISPOSED', 'Приложение завершает работу.');
     const url = validateUrl(rawUrl);
     const cached = this.cache.get(url);
+    let page = null;
+    try { page = pageUrl ? validateUrl(pageUrl) : null; } catch { page = null; }
     const job = { id: crypto.randomUUID(), url, title: String(title || cached?.title || new URL(url).hostname).slice(0, 300),
       status: 'queued', progress: 0, speed: 0, eta: null, error: null, filename: null, quality,
       formatId: formatId ? String(formatId) : undefined, audioOnly: Boolean(audioOnly), extra: privateOptions(extra),
       formats: cached?.formats || [], thumbnail: thumbnail || cached?.thumbnail || null,
-      directory: this.downloadDir, createdAt: new Date().toISOString(), downloadedBytes: 0, totalBytes: 0 };
+      directory: this.downloadDir, createdAt: new Date().toISOString(), downloadedBytes: 0, totalBytes: 0, named: Boolean(named && title),
+      pageUrl: page, duration: Number.isFinite(duration) && duration > 0 ? duration : null };
     formatSelection(job, job.formats);
+    this._sealSession(job);
     this.jobs.unshift(job);
     this._changed(true);
     queueMicrotask(() => this._drain());
     return this.getState().find((item) => item.id === job.id);
+  }
+
+  // Continues an existing job with a freshly caught stream of the same video:
+  // same file name and the same temporary fragments, new URL and session.
+  reattach(id, { url: rawUrl, extra = {}, duration } = {}) {
+    const job = this.jobs.find((item) => item.id === id);
+    if (!job || job.status === 'completed') throw new DownloadError('NOT_FOUND', 'Загрузка не найдена.');
+    if (this.processes.has(id)) throw new DownloadError('BUSY', 'Загрузка уже идёт.');
+    this._cleanupCookie(job, { keepSource: true });
+    job.url = validateUrl(rawUrl);
+    job.extra = privateOptions(extra);
+    if (!job.duration && Number.isFinite(duration) && duration > 0) job.duration = duration;
+    job.needsSource = false; job.sessionRestored = false; job.error = null; job.errorCode = null;
+    job.status = 'queued';
+    this._sealSession(job);
+    this._changed(true); this._drain();
+    return this.getState().find((item) => item.id === id);
   }
 
   setDirectory(directory) {
@@ -292,7 +376,10 @@ class DownloadManager {
   resume(id) {
     const job = this.jobs.find((item) => item.id === id);
     if (!job || !['paused', 'error', 'cancelled'].includes(job.status)) return false;
-    if (job.needsSource) throw new DownloadError('SOURCE_EXPIRED', 'Повторно откройте источник в браузере и выберите поток: данные сессии не сохраняются между запусками.');
+    if (job.needsSource || !this._openSession(job)) {
+      job.needsSource = true; this._changed(true);
+      throw new DownloadError('SOURCE_EXPIRED', 'Откройте источник: PULL откроет страницу, включите видео, и загрузка продолжится.');
+    }
     job.status = 'queued'; job.error = null; job.errorCode = null;
     this._changed(true); this._drain(); return true;
   }
@@ -335,7 +422,7 @@ class DownloadManager {
       args.push('--no-simulate', '--newline', '--progress', '--continue', '--part', '--no-overwrites', '--abort-on-error',
         '--concurrent-fragments', '4', '--windows-filenames', '--trim-filenames', '190',
         '--paths', `home:${job.directory}`, '--paths', `temp:${parts}`,
-        '--output', '%(title).120B [%(id)s] [%(format_id)s].%(ext)s',
+        '--output', this._outputTemplate(job),
         '--format', formatSelection(job, job.formats), '--merge-output-format', 'mp4/mkv',
         '--progress-template', 'download:__PULL_PROGRESS__%(progress)j',
         '--progress-template', 'postprocess:__PULL_POST__%(progress.status)s',
@@ -371,6 +458,13 @@ class DownloadManager {
           } else {
             const failure = describeError(error?.message || record.stderr || record.warnings || (code === 0 ? 'Загрузчик завершился, но итоговый файл не найден.' : `Загрузчик завершился с кодом ${code}.`));
             job.status = 'error'; job.error = failure.message; job.errorCode = failure.code;
+            // A stream whose signed link or session has expired can be picked up
+            // again on its page; say so instead of a generic error.
+            const expired = failure.code === 'AUTH_REQUIRED' || /\b(403|404|410)\b|expired|Forbidden|Gone/i.test(record.stderr || '');
+            if (job.pageUrl && (job.sessionRestored || expired)) {
+              job.errorCode = 'SOURCE_EXPIRED';
+              job.error = 'Ссылка на видео устарела. Нажмите «Открыть источник» и включите видео, загрузка продолжится с того же места.';
+            }
           }
         }
         // Temporary fragments are kept only while the job can still be resumed.
@@ -401,6 +495,8 @@ class DownloadManager {
         this._changed();
       } catch { /* A truncated progress line does not affect the download. */ }
     } else if (line.startsWith('__PULL_TITLE__')) {
+      // A page-given title is better than yt-dlp's guess for a bare stream ("master", "index").
+      if (job.named) return;
       try { job.title = String(JSON.parse(line.slice('__PULL_TITLE__'.length))).slice(0, 300); } catch { /* optional title */ }
     } else if (line.startsWith('__PULL_FILE__')) {
       try {
@@ -427,6 +523,24 @@ class DownloadManager {
     } else { try { child.kill('SIGTERM'); } catch {} }
   }
 
+  // Stream URLs carry no real title, so jobs named from the page get a clean,
+  // unique file name: "Title.mp4", then "Title (2).mp4" if that name is taken.
+  _outputTemplate(job) {
+    if (!job.named) return '%(title).120B [%(id)s] [%(format_id)s].%(ext)s';
+    if (!job.outputBase) {
+      const base = safeFileName(job.title) || 'Видео';
+      let names = [];
+      try { names = fs.readdirSync(job.directory).map((name) => name.toLowerCase()); } catch { /* new folder */ }
+      // Taken by a file on disk or reserved by another job (two downloads of the same page at once).
+      const taken = (candidate) => names.some((name) => name.startsWith(candidate.toLowerCase() + '.'))
+        || this.jobs.some((other) => other !== job && other.directory === job.directory && other.outputBase?.toLowerCase() === candidate.toLowerCase());
+      let unique = base;
+      for (let n = 2; taken(unique) && n < 1000; n++) unique = base + ' (' + n + ')';
+      job.outputBase = unique;
+    }
+    return job.outputBase.replace(/%/g, '%%') + '.%(ext)s';
+  }
+
   _partsDir(job) {
     if (typeof job.directory !== 'string' || !/^[a-f0-9-]{36}$/.test(job.id)) return null;
     return path.join(job.directory, '.pull-parts', job.id);
@@ -443,7 +557,9 @@ class DownloadManager {
       .catch(() => {});
   }
 
-  _cleanupCookie(job) {
+  _cleanupCookie(job, { keepSource = false } = {}) {
+    // A finished download no longer needs its sealed session.
+    if (job.status === 'completed') delete job.secret;
     const cookieFile = job.extra?.cookieFile;
     if (!cookieFile) return;
     const relative = path.relative(this.dataDir, path.resolve(cookieFile));
@@ -452,7 +568,10 @@ class DownloadManager {
     if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
       try { fs.unlinkSync(cookieFile); } catch {}
       delete job.extra.cookieFile;
-      if (job.status !== 'completed') job.needsSource = true;
+      if (job.status !== 'completed' && !keepSource) {
+        // With a sealed session the job can be reopened later; without one the page is needed again.
+        if (job.secret) job.extra = { headers: {} }; else job.needsSource = true;
+      }
     }
   }
 
@@ -468,4 +587,4 @@ class DownloadManager {
   }
 }
 
-module.exports = { DownloadManager, DownloadError, _internals: { validateUrl, publicUrl, redact, formatSelection, privateOptions, describeError } };
+module.exports = { DownloadManager, DownloadError, _internals: { validateUrl, publicUrl, redact, formatSelection, privateOptions, describeError, safeFileName } };

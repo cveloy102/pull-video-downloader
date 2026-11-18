@@ -36,3 +36,4 @@ local.properties
 *.key
 *.p12
 *.hprof
+dist-*/
