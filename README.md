@@ -6,6 +6,8 @@
 
 [**Скачать PULL**](https://github.com/cveloy102/pull-video-downloader/releases/download/v1.2.1/PULL-Setup-1.2.1-Sidebar.exe) · [Расширение Edge / Chrome](https://github.com/cveloy102/pull-video-downloader/releases/download/v1.2.1/PULL-extension.zip) · [Все релизы](https://github.com/cveloy102/pull-video-downloader/releases) · [История версий](CHANGELOG.md)
 
+[Страница приложения](https://cveloy102.github.io/pull/)
+
 ## Интерфейс
 
 ![Экран PULL: строка ссылки и очередь загрузок](docs/images/downloads.png)
